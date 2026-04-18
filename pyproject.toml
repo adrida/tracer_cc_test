@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tracercc"
+version = "0.2.0"
+description = "Spotify-Wrapped-style waste diagnostic for your Claude Code & Cursor spend"
+readme = "README.md"
+requires-python = ">=3.9,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "Adam Rida" }]
+keywords = ["claude-code", "cursor", "llm", "cost-optimization", "tracer"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development",
+]
+# Thin client: parse local data, redact, POST to backend, render HTML.
+# All clustering/pricing/embedding lives in the hosted analysis backend
+# so the wheel stays small and `uvx tracercc` cold-starts in <2s.
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24,<2.1",
+    "requests>=2.31",
+    "jinja2>=3.1",
+]
+
+[project.scripts]
+tracercc = "tracercc.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/adrida/tracer_cc_test"
+Repository = "https://github.com/adrida/tracer_cc_test"
+
+[tool.setuptools.packages.find]
+include = ["tracercc*"]
+
+[tool.setuptools.package-data]
+tracercc = ["templates/*.html.j2", "templates/*.css"]

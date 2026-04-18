@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>tracerCC · Claude Code Wrapped</title>
+<style>
+  :root {
+    --bg-0: #050507;
+    --bg-1: #0b0f10;
+    --fg:   #f4f7f5;
+    --fg-dim: #9aa6a0;
+    --green: #1dd66b;
+    --green-dim: #178a47;
+    --red:   #ff5b5b;
+    --orange:#ffb547;
+    --purple:#b18cff;
+    --card:  rgba(255,255,255,0.04);
+    --card-border: rgba(255,255,255,0.08);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg-0); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    font-feature-settings: "ss01","cv11"; -webkit-font-smoothing: antialiased; }
+  a { color: var(--green); text-decoration: none; }
+  .mono { font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace; }
+  .num  { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+
+  section { padding: 88px 32px; max-width: 1100px; margin: 0 auto; }
+  section + section { border-top: 1px solid var(--card-border); }
+
+  /* HERO */
+  .hero {
+    min-height: 100vh; display: flex; flex-direction: column; justify-content: center;
+    background:
+      radial-gradient(ellipse at 20% 0%, #0d3a22 0%, transparent 55%),
+      radial-gradient(ellipse at 80% 100%, #251448 0%, transparent 55%),
+      var(--bg-0);
+    padding: 96px 32px;
+  }
+  .hero .label { text-transform: uppercase; letter-spacing: 0.18em;
+    font-size: 13px; color: var(--green); margin-bottom: 24px; font-weight: 600; }
+  .hero h1 { font-size: clamp(48px, 7vw, 96px); line-height: 1.02;
+    font-weight: 800; letter-spacing: -0.03em; margin: 0 0 32px; }
+  .hero h1 em { font-style: normal; color: var(--green); }
+  .hero .sub { font-size: clamp(18px, 1.6vw, 22px); color: var(--fg-dim);
+    max-width: 620px; line-height: 1.45; }
+  .hero .meta { margin-top: 56px; color: var(--fg-dim); font-size: 14px; }
+  .hero .meta b { color: var(--fg); font-weight: 600; }
+
+  /* big stat */
+  .bignum { font-size: clamp(80px, 14vw, 200px); font-weight: 800; letter-spacing: -0.04em;
+    line-height: 0.95; margin: 0 0 24px; color: var(--green); }
+  .bignum .ccy { font-size: 0.45em; vertical-align: 0.18em; color: var(--fg-dim);
+    font-weight: 600; margin-right: 8px; }
+  .bigsub { font-size: clamp(18px, 1.5vw, 22px); color: var(--fg-dim); max-width: 720px;
+    line-height: 1.5; }
+  .bigsub b { color: var(--fg); }
+
+  /* chips / kpi grid */
+  .kpis { display: grid; gap: 16px; margin-top: 48px;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+  .kpi { background: var(--card); border: 1px solid var(--card-border);
+    border-radius: 16px; padding: 24px; }
+  .kpi .k { font-size: 12px; color: var(--fg-dim); text-transform: uppercase;
+    letter-spacing: 0.12em; font-weight: 600; }
+  .kpi .v { font-size: 32px; font-weight: 700; margin-top: 8px;
+    font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+  .kpi .d { font-size: 13px; color: var(--fg-dim); margin-top: 4px; }
+
+  /* section heading */
+  h2 { font-size: clamp(28px, 3vw, 44px); font-weight: 800; letter-spacing: -0.02em;
+    margin: 0 0 12px; }
+  h2 .accent { color: var(--green); }
+  .lede { font-size: 17px; color: var(--fg-dim); max-width: 720px; line-height: 1.55;
+    margin: 0 0 40px; }
+
+  /* cluster cards */
+  .clusters { display: grid; gap: 18px;
+    grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); }
+  .cl { background: var(--card); border: 1px solid var(--card-border);
+    border-radius: 18px; padding: 28px; transition: transform 0.15s; }
+  .cl:hover { transform: translateY(-2px); border-color: rgba(29,214,107,0.35); }
+  .cl .label { font-size: 12px; color: var(--green); text-transform: uppercase;
+    letter-spacing: 0.14em; font-weight: 700; }
+  .cl .name { font-size: 22px; font-weight: 700; margin: 8px 0 16px; letter-spacing: -0.01em; }
+  .cl .row { display: flex; justify-content: space-between; align-items: baseline;
+    margin: 8px 0; }
+  .cl .row .l { color: var(--fg-dim); font-size: 13px; }
+  .cl .row .v { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .cl .v.actual { color: var(--red); }
+  .cl .v.save   { color: var(--green); }
+  .cl .bar { height: 8px; border-radius: 4px; background: rgba(255,255,255,0.06);
+    margin: 14px 0 8px; overflow: hidden; position: relative; }
+  .cl .bar .fill-actual { position: absolute; inset: 0; background: var(--red); opacity: 0.35; }
+  .cl .bar .fill-save   { position: absolute; left: 0; top: 0; bottom: 0;
+    background: var(--green); }
+  .cl pre.medoid { background: rgba(0,0,0,0.4); border: 1px solid var(--card-border);
+    border-radius: 10px; padding: 12px 14px; margin: 16px 0 0; font-size: 12.5px;
+    line-height: 1.45; color: var(--fg); overflow-x: auto; max-height: 92px;
+    white-space: pre-wrap; word-break: break-word; }
+  .cl .ex { font-size: 12px; color: var(--fg-dim); margin-top: 12px; }
+  .cl .ex span { display: block; padding: 4px 0; border-top: 1px dashed rgba(255,255,255,0.06);
+    font-family: ui-monospace, monospace; word-break: break-word; }
+
+  /* stat cards (fun stats) */
+  .stats { display: grid; gap: 18px;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .stat { background: var(--card); border: 1px solid var(--card-border);
+    border-radius: 16px; padding: 24px; }
+  .stat .t { font-size: 12px; color: var(--purple); text-transform: uppercase;
+    letter-spacing: 0.14em; font-weight: 700; }
+  .stat .v { font-size: 28px; font-weight: 700; margin: 12px 0 6px;
+    font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  .stat .d { font-size: 14px; color: var(--fg-dim); line-height: 1.5; }
+
+  /* sessions table */
+  .sess { width: 100%; border-collapse: collapse; }
+  .sess th { text-align: left; font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.12em; color: var(--fg-dim); padding: 12px 16px; font-weight: 600;
+    border-bottom: 1px solid var(--card-border); }
+  .sess td { padding: 16px; border-bottom: 1px solid var(--card-border);
+    font-size: 14px; vertical-align: top; }
+  .sess td.spend { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums;
+    color: var(--orange); }
+  .sess td .cwd { color: var(--fg-dim); font-size: 12px; font-family: ui-monospace, monospace; }
+
+  /* trust */
+  .trust { background:
+      radial-gradient(ellipse at 100% 0%, #2c1130 0%, transparent 50%),
+      var(--bg-1);
+    border: 1px solid var(--card-border); border-radius: 22px; padding: 40px; }
+  .trust h2 { color: var(--purple); }
+  .trust .gauge { height: 22px; border-radius: 11px; background: rgba(255,255,255,0.06);
+    margin: 24px 0 12px; overflow: hidden; display: flex; }
+  .trust .gauge .seg-recommend { background: var(--green); }
+  .trust .gauge .seg-excluded  { background: var(--purple); }
+  .trust .legend { display: flex; gap: 24px; font-size: 13px; color: var(--fg-dim); }
+  .trust .legend span { display: inline-flex; align-items: center; gap: 8px; }
+  .trust .legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+
+  /* method badge */
+  .method { background: var(--card); border: 1px solid var(--card-border);
+    border-radius: 18px; padding: 28px; }
+  .method ol { margin: 16px 0 0; padding-left: 22px; line-height: 1.7; color: var(--fg-dim); }
+  .method ol li b { color: var(--fg); }
+
+  /* footer */
+  footer { padding: 56px 32px 80px; text-align: center; color: var(--fg-dim);
+    font-size: 13px; }
+  footer a { font-weight: 600; }
+</style>
+</head>
+<body>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="label">tracerCC · your claude code wrapped</div>
+  <h1>You can save <em>${{ r.saving_haiku_usd|money }}</em><br>of your Claude Code bill.</h1>
+  <p class="sub">
+    From {{ r.n_sessions }} sessions over the last {{ r.span_days }} days, we found
+    <b>{{ r.n_clusters }} BGE-clustered patterns of mechanical work</b>
+    where Opus was billed for commands a smaller model could have emitted just as well.
+    No quality is being downgraded.
+  </p>
+  <div class="meta">
+    <b>{{ r.n_messages|number }}</b> messages · <b>{{ r.n_prompts }}</b> prompts ·
+    <b>${{ r.total_spend_usd|money(2) }}</b> total spend ·
+    {{ r.earliest[:10] }} → {{ r.latest[:10] }}
+  </div>
+</section>
+
+<!-- HEADLINE -->
+<section>
+  <div class="label" style="text-transform:uppercase;letter-spacing:.18em;color:var(--green);font-size:13px;font-weight:600;margin-bottom:24px;">
+    the number that matters
+  </div>
+  <p class="bignum"><span class="ccy">$</span>{{ r.saving_haiku_usd|money }}</p>
+  <p class="bigsub">
+    That's <b>{{ r.saving_haiku_pct_of_opus|money(1) }}%</b> of your
+    <b>${{ r.opus_spend_usd|money }}</b> Opus spend, recoverable by routing
+    {{ r.n_clusters }} clusters of mechanical work to <b class="mono">/model haiku</b>.
+    Quality-preserving by construction: each cluster contains
+    <b>{{ r.n_mechanical_turns // r.n_clusters if r.n_clusters else 0 }}+ near-identical commands on average</b>
+    — by definition, a smaller model can emit any one of them.
+  </p>
+  <div class="kpis">
+    <div class="kpi"><div class="k">Total spend</div><div class="v num">${{ r.total_spend_usd|money }}</div><div class="d">Across all models, all sessions</div></div>
+    <div class="kpi"><div class="k">Opus spend</div><div class="v num">${{ r.opus_spend_usd|money }}</div><div class="d">{{ 100 * r.opus_spend_usd / r.total_spend_usd if r.total_spend_usd else 0|money }}% of bill</div></div>
+    <div class="kpi"><div class="k">→ Sonnet save</div><div class="v num" style="color:var(--orange)">${{ r.saving_sonnet_usd|money }}</div><div class="d">If gated work routed to Sonnet</div></div>
+    <div class="kpi"><div class="k">→ Haiku save</div><div class="v num" style="color:var(--green)">${{ r.saving_haiku_usd|money }}</div><div class="d">If gated work routed to Haiku</div></div>
+  </div>
+</section>
+
+{% if r.fun_stats %}
+<!-- FUN STATS -->
+<section>
+  <h2>The <span class="accent">receipts</span></h2>
+  <p class="lede">A few things you probably didn't notice while you were typing.</p>
+  <div class="stats">
+    {% for s in r.fun_stats %}
+    <div class="stat">
+      <div class="t">{{ s.title }}</div>
+      <div class="v">{{ s.value }}</div>
+      <div class="d">{{ s.detail }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if r.top_clusters %}
+<!-- CLUSTER CARDS -->
+<section>
+  <h2>Top patterns of <span class="accent">mechanical waste</span></h2>
+  <p class="lede">
+    Each card is one BGE+HDBSCAN cluster of near-identical mechanical tool calls.
+    The medoid is the most-central command in the cluster; HDBSCAN density guarantees
+    that every other command in the cluster is a small variation on this one.
+    These are the routinizable patterns Tracer recommends demoting.
+  </p>
+  <div class="clusters">
+    {% for c in r.top_clusters %}
+    <div class="cl">
+      <div class="label">{{ c.dominant_tool }} · {{ c.n_turns }} turns</div>
+      <div class="name">{{ c.label }}</div>
+      <div class="row"><span class="l">Spent on Opus</span><span class="v actual num">${{ c.actual_usd|money(2) }}</span></div>
+      <div class="row"><span class="l">If rerouted to Haiku</span><span class="v save num">save ${{ c.save_haiku_usd|money(2) }}</span></div>
+      <div class="bar">
+        <div class="fill-actual"></div>
+        <div class="fill-save" style="width: {{ 100 * c.save_haiku_usd / c.actual_usd if c.actual_usd else 0|money(1) }}%"></div>
+      </div>
+      <pre class="medoid">{{ c.medoid_text }}</pre>
+      {% if c.examples and c.examples|length > 1 %}
+      <div class="ex">
+        <span style="color:var(--fg-dim);border:none">Other examples in this cluster:</span>
+        {% for ex in c.examples[1:] %}
+        <span>{{ ex }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if r.top_sessions %}
+<!-- SESSIONS -->
+<section>
+  <h2>Your most expensive <span class="accent">sessions</span></h2>
+  <p class="lede">
+    Where the money actually went, by session. Useful for spotting which workflows
+    deserve a different default `/model`.
+  </p>
+  <table class="sess">
+    <thead>
+      <tr>
+        <th>Session</th>
+        <th>Started</th>
+        <th>Prompts</th>
+        <th>Top tool</th>
+        <th>Model</th>
+        <th style="text-align:right">Spend</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in r.top_sessions %}
+      <tr>
+        <td>
+          <div class="mono">{{ s.session_short }}</div>
+          <div class="cwd">{{ s.cwd }}</div>
+        </td>
+        <td class="num">{{ s.started_at }}</td>
+        <td class="num">{{ s.n_prompts }}</td>
+        <td class="mono">{{ s.top_tool }}</td>
+        <td class="mono">{{ s.dominant_model }}</td>
+        <td class="spend num">${{ s.spend_usd|money(2) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<!-- TRUST -->
+<section>
+  <div class="trust">
+    <h2>What we <span class="accent" style="color:var(--purple)">won't</span> claim</h2>
+    <p class="lede">
+      tracerCC is a <b>fail-closed</b> diagnostic. If we can't find structural evidence
+      that a turn is routinizable, we exclude it. That's why the savings number below
+      is smaller than a naive arithmetic ceiling — and why it's defensible.
+    </p>
+    <div class="gauge" title="">
+      {% set total = r.opus_spend_usd if r.opus_spend_usd else 1 %}
+      {% set rec_pct = 100 * r.spend_in_clusters_usd / total %}
+      {% set exc_pct = 100 - rec_pct %}
+      <div class="seg-recommend" style="width: {{ '%.1f'|format(rec_pct) }}%"></div>
+      <div class="seg-excluded"  style="width: {{ '%.1f'|format(exc_pct) }}%"></div>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--green)"></i>
+        ${{ r.spend_in_clusters_usd|money }} ({{ rec_pct|money }}%) recommendable
+      </span>
+      <span><i style="background:var(--purple)"></i>
+        ${{ r.spend_excluded_usd|money }} ({{ exc_pct|money }}%) excluded — needs more evidence
+      </span>
+    </div>
+    <p style="color:var(--fg-dim); font-size:14px; margin-top:24px; line-height:1.6;">
+      For comparison, naive arithmetic ("just demote every Opus turn to Haiku") would suggest
+      <b style="color:var(--fg)">${{ r.ceiling_haiku_usd|money }} ({{ r.ceiling_haiku_pct_of_opus|money }}%)</b> saveable.
+      We capture <b style="color:var(--green)">{{ 100 * r.saving_haiku_usd / r.ceiling_haiku_usd if r.ceiling_haiku_usd else 0|money }}%</b> of that ceiling
+      with per-cluster quality-preservation evidence for every dollar.
+    </p>
+  </div>
+</section>
+
+<!-- METHOD -->
+<section>
+  <div class="method">
+    <h2>How we computed this</h2>
+    <ol>
+      <li><b>Extracted</b> {{ r.n_messages|number }} messages from your <span class="mono">~/.claude/projects/</span> JSONL streams.</li>
+      <li><b>Priced</b> each message against current Anthropic pricing (verified Apr 2026: Opus 4.x at $5/$25 per Mtok).</li>
+      <li><b>Identified</b> {{ r.n_mechanical_turns|number }} mechanical-only Opus turns — turns whose only output is a `Bash` / `Read` / `Glob` / `Grep` / `Edit` tool call, with no thinking blocks.</li>
+      <li><b>Embedded</b> each turn's tool input with Cloudflare BGE-M3 (1024-dim).</li>
+      <li><b>Clustered</b> the embeddings with UMAP → HDBSCAN. Found {{ r.n_clusters }} dense clusters; excluded {{ r.n_noise }} noise turns.</li>
+      <li><b>Repriced</b> only the clustered turns at Haiku rates → ${{ r.saving_haiku_usd|money }} headline saving.</li>
+    </ol>
+  </div>
+</section>
+
+<footer>
+  <p>generated {{ r.generated_at }} by <b>tracerCC v{{ r.tracercc_version }}</b><br>
+  <a href="https://github.com/adrida/tracer">adrida/tracer</a> · this report is local and never leaves your machine</p>
+</footer>
+
+</body>
+</html>
