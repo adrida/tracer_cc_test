@@ -27,30 +27,44 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# [local] — in-process analysis, zero network. Bundles pricing + clustering
-# + local embeddings (sentence-transformers MiniLM by default).
+# [local] — in-process analysis, zero network, zero torch. Uses sklearn
+# HashingVectorizer for embeddings (coarser than BGE-M3 but plenty for the
+# structural gate) and sklearn HDBSCAN for clustering. ~15 MB of installs,
+# 5s first-run latency.
 local = [
     "pydantic>=2.7",
     "scikit-learn>=1.3",
-    "sentence-transformers>=2.7",
 ]
-# [serve] — everything [local] provides, PLUS the FastAPI HTTP surface so you
-# can self-host the reference backend.
+# [embed] — upgrade the embedder from hashing to sentence-transformers MiniLM
+# (384-dim, better cluster boundaries). Pulls torch + the HuggingFace stack
+# — first run downloads ~500 MB of torch + 90 MB of model weights, cached
+# under ~/.cache/huggingface. Run once, reuse forever.
+embed = [
+    "pydantic>=2.7",
+    "scikit-learn>=1.3",
+    "torch>=2.4",
+    "sentence-transformers>=3.0",
+]
+# [serve] — [embed] + the FastAPI HTTP surface so you can self-host the
+# reference backend (`tracercc serve`).
 serve = [
     "pydantic>=2.7",
     "scikit-learn>=1.3",
-    "sentence-transformers>=2.7",
+    "torch>=2.4",
+    "sentence-transformers>=3.0",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "aiohttp>=3.9",
     "python-dotenv>=1.0",
     "slowapi>=0.1.9",
 ]
-# [full] — adds UMAP + HDBSCAN for the "heavy" clustering path. Optional.
+# [full] — [embed] + UMAP + HDBSCAN for the heavy clustering path. Pulls
+# numba + llvmlite so expect longer install. Use for >1k mechanical turns.
 full = [
     "pydantic>=2.7",
     "scikit-learn>=1.3",
-    "sentence-transformers>=2.7",
+    "torch>=2.4",
+    "sentence-transformers>=3.0",
     "umap-learn>=0.5",
     "hdbscan>=0.8",
 ]

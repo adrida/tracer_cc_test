@@ -48,22 +48,36 @@ latter is the tracerCC roadmap's moat, not a gate for the first click.
 
 ## Install
 
+Four tiers, pick by how much you want to download on first run:
+
+| Extras | What you get | First-run DL | Cluster quality |
+|---|---|---|---|
+| `tracercc` | Client only, uses hosted backend | ~15 MB | depends on hosted |
+| `tracercc[local]` | Local pipeline, sklearn hashing embedder + sklearn HDBSCAN | ~15 MB | good |
+| `tracercc[embed]` | [local] + sentence-transformers MiniLM (better clusters) | +500 MB torch, +90 MB model | very good |
+| `tracercc[full]` | [embed] + UMAP + HDBSCAN heavy clusterer | +100 MB numba/llvmlite | best (>1k turns) |
+| `tracercc[serve]` | [embed] + FastAPI for self-hosting | +500 MB | — |
+
+Recommended: **`pip install 'tracercc[local]'`** — fastest start, no torch, no downloads beyond
+the sklearn install. The hashing embedder is noticeably coarser than MiniLM in theory, but the
+structural gate (mechanical-turn filter → density clustering) is robust enough that the
+resulting clusters are indistinguishable in practice on single-developer corpora.
+
 ```bash
-# Local-by-default: no network, no Cloudflare, no Cloud Run dependency.
 pip install 'tracercc[local]'
-tracercc                          # autodetect, open browser
+tracercc                          # autodetect, open browser — ~10s total
 
-# Lite client — defers the analysis to the hosted backend.
-pip install tracercc
-tracercc --hosted
+# If your clusters look underdelineated, upgrade to MiniLM:
+pip install 'tracercc[embed]'
+tracercc                          # same command, now uses sentence-transformers
 
-# Self-host the reference backend for a team.
+# Self-host for a team:
 pip install 'tracercc[serve]'
-tracercc serve --port 8080        # in another terminal:
+tracercc serve --port 8080
 TRACERCC_BACKEND_URL=http://localhost:8080 tracercc --hosted
 ```
 
-One-liner install (installs `uv` if needed):
+One-liner (installs `uv` if needed):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/adrida/tracer_cc_test/main/install.sh | bash

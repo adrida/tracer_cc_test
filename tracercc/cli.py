@@ -152,7 +152,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if use_local:
         if progress:
-            print("→ running analysis in-process ...")
+            try:
+                from .backend.embedding import _pick_backend
+                embedder = _pick_backend()
+                print(f"→ running analysis in-process (embedder={embedder}) ...")
+            except ImportError:
+                print("→ running analysis in-process ...")
         from .local_analyze import analyze_local
         try:
             report = analyze_local(payload, source=source)
