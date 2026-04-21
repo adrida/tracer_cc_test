@@ -30,6 +30,9 @@ MECHANICAL_TOOLS: set[str] = {
     # Autogen, LlamaIndex, OpenRouter, etc.). Kept in the whitelist because the
     # semantic category is mechanical even though the name varies.
     "run_command", "shell", "execute", "exec", "bash", "sh",
+    "terminal", "execute_code", "run_code", "code_exec", "run_python",
+    "patch", "apply_patch", "apply_diff", "diff",
+    "cronjob", "schedule_task", "create_cron",
     "read_file", "readFile", "view_file", "file_read",
     "write_file", "writeFile", "file_write", "create_file",
     "edit_file", "editFile", "modify_file",
@@ -98,8 +101,14 @@ def mechanical_turn_text(tool_name: str | None, input_preview: str | None) -> st
     if not isinstance(d, dict):
         return f"{name}: {str(d)[:200]}"
     # Claude Code-native shapes with specific fields worth pinning
-    if name in ("Bash", "run_command", "shell", "execute", "exec", "bash", "sh"):
-        return f"{name}: {str(d.get('command', d.get('cmd', '')))[:300]}"
+    if name in ("Bash", "run_command", "shell", "execute", "exec", "bash", "sh",
+                "terminal", "execute_code", "run_code", "code_exec", "run_python"):
+        cmd = str(d.get('command', d.get('cmd', d.get('code', ''))))
+        return f"{name}: {cmd[:300]}"
+    if name in ("patch", "apply_patch", "apply_diff"):
+        return f"{name}: {str(d.get('path', d.get('file', '')))[:80]} {str(d.get('old_string', d.get('diff', '')))[:220]}"
+    if name == "cronjob":
+        return f"cronjob: {str(d.get('name', d.get('schedule', d.get('cron', ''))))[:160]}"
     if name in ("Read", "read_file", "view_file", "file_read", "readFile"):
         return f"{name}: {d.get('file_path', d.get('path', ''))}"
     if name == "NotebookEdit":

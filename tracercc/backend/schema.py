@@ -43,6 +43,7 @@ class MessageRow(BaseModel):
     n_text_blocks: Optional[int] = 0
     n_thinking_blocks: Optional[int] = 0
     n_tool_use_blocks: Optional[int] = 0
+    thinking_chars: Optional[int] = 0
     project_dir: Optional[str] = None
 
 
