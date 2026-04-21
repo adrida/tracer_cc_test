@@ -153,15 +153,24 @@
 </head>
 <body>
 
+{# Prefer the family-aware headline (populated by backend >=0.3.0) and fall back
+   to the legacy Anthropic-specific one when the backend is older or the corpus
+   is Claude-only. `hero_save` / `hero_premium` / `hero_pct` are the values the
+   hero + headline sections use throughout. #}
+{% set hero_save = (r.saving_cheapest_sibling_usd or 0) if (r.saving_cheapest_sibling_usd or 0) > 0 else r.saving_haiku_usd %}
+{% set hero_premium = (r.premium_spend_usd or 0) if (r.premium_spend_usd or 0) > 0 else r.opus_spend_usd %}
+{% set hero_pct = (r.saving_cheapest_sibling_pct_of_premium or 0) if (r.saving_cheapest_sibling_pct_of_premium or 0) > 0 else r.saving_haiku_pct_of_opus %}
+{% set hero_label = "premium-tier" if (r.saving_cheapest_sibling_usd or 0) > 0 else "Opus" %}
+
 <!-- HERO -->
 <section class="hero">
-  <div class="label">tracerCC · your claude code wrapped</div>
-  <h1>You can save <em>${{ r.saving_haiku_usd|money }}</em><br>of your Claude Code bill.</h1>
+  <div class="label">tracerCC · your AI coding, wrapped</div>
+  <h1>You can save <em>${{ hero_save|money }}</em><br>of your AI-coding bill.</h1>
   <p class="sub">
     From {{ r.n_sessions }} sessions over the last {{ r.span_days }} days, we found
-    <b>{{ r.n_clusters }} BGE-clustered patterns of mechanical work</b>
-    where Opus was billed for commands a smaller model could have emitted just as well.
-    No quality is being downgraded.
+    <b>{{ r.n_clusters }} clusters of mechanical work</b>
+    where the {{ hero_label }} model was billed for operations a cheaper sibling
+    in the same model family could have emitted just as well. No quality downgrade.
   </p>
   <div class="meta">
     <b>{{ r.n_messages|number }}</b> messages · <b>{{ r.n_prompts }}</b> prompts ·
@@ -175,20 +184,20 @@
   <div class="label" style="text-transform:uppercase;letter-spacing:.18em;color:var(--green);font-size:13px;font-weight:600;margin-bottom:24px;">
     the number that matters
   </div>
-  <p class="bignum"><span class="ccy">$</span>{{ r.saving_haiku_usd|money }}</p>
+  <p class="bignum"><span class="ccy">$</span>{{ hero_save|money }}</p>
   <p class="bigsub">
-    That's <b>{{ r.saving_haiku_pct_of_opus|money(1) }}%</b> of your
-    <b>${{ r.opus_spend_usd|money }}</b> Opus spend, recoverable by routing
-    {{ r.n_clusters }} clusters of mechanical work to <b class="mono">/model haiku</b>.
+    That's <b>{{ hero_pct|money(1) }}%</b> of your
+    <b>${{ hero_premium|money }}</b> {{ hero_label }} spend, recoverable by routing
+    {{ r.n_clusters }} clusters of mechanical work to a cheaper sibling model.
     Quality-preserving by construction: each cluster contains
     <b>{{ r.n_mechanical_turns // r.n_clusters if r.n_clusters else 0 }}+ near-identical commands on average</b>
     — by definition, a smaller model can emit any one of them.
   </p>
   <div class="kpis">
     <div class="kpi"><div class="k">Total spend</div><div class="v num">${{ r.total_spend_usd|money }}</div><div class="d">Across all models, all sessions</div></div>
-    <div class="kpi"><div class="k">Opus spend</div><div class="v num">${{ r.opus_spend_usd|money }}</div><div class="d">{{ 100 * r.opus_spend_usd / r.total_spend_usd if r.total_spend_usd else 0|money }}% of bill</div></div>
-    <div class="kpi"><div class="k">→ Sonnet save</div><div class="v num" style="color:var(--orange)">${{ r.saving_sonnet_usd|money }}</div><div class="d">If gated work routed to Sonnet</div></div>
-    <div class="kpi"><div class="k">→ Haiku save</div><div class="v num" style="color:var(--green)">${{ r.saving_haiku_usd|money }}</div><div class="d">If gated work routed to Haiku</div></div>
+    <div class="kpi"><div class="k">{{ hero_label }} spend</div><div class="v num">${{ hero_premium|money }}</div><div class="d">{{ 100 * hero_premium / r.total_spend_usd if r.total_spend_usd else 0|money }}% of bill</div></div>
+    <div class="kpi"><div class="k">→ cheapest sibling</div><div class="v num" style="color:var(--green)">${{ hero_save|money }}</div><div class="d">In-family downgrade on gated turns</div></div>
+    <div class="kpi"><div class="k">→ Haiku save (ref)</div><div class="v num" style="color:var(--orange)">${{ r.saving_haiku_usd|money }}</div><div class="d">Claude Haiku target (legacy)</div></div>
   </div>
 </section>
 

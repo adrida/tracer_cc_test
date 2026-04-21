@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tracercc"
-version = "0.2.0"
-description = "Spotify-Wrapped-style waste diagnostic for your Claude Code & Cursor spend"
+version = "0.3.0"
+description = "Open-core waste diagnostic for Claude Code, Cursor, and custom agents — local by default."
 readme = "README.md"
 requires-python = ">=3.9,<3.13"
 license = { text = "MIT" }
 authors = [{ name = "Adam Rida" }]
-keywords = ["claude-code", "cursor", "llm", "cost-optimization", "tracer"]
+keywords = ["claude-code", "cursor", "llm", "cost-optimization", "tracer", "openai", "gemini"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
@@ -18,14 +18,41 @@ classifiers = [
     "Operating System :: OS Independent",
     "Topic :: Software Development",
 ]
-# Thin client: parse local data, redact, POST to backend, render HTML.
-# All clustering/pricing/embedding lives in the hosted analysis backend
-# so the wheel stays small and `uvx tracercc` cold-starts in <2s.
+# Core client: extract + redact + render + talk to a backend over HTTP.
 dependencies = [
     "pandas>=2.0",
-    "numpy>=1.24,<2.1",
+    "numpy>=1.24,<2.2",
     "requests>=2.31",
     "jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+# [local] — in-process analysis, zero network. Bundles pricing + clustering
+# + local embeddings (sentence-transformers MiniLM by default).
+local = [
+    "pydantic>=2.7",
+    "scikit-learn>=1.3",
+    "sentence-transformers>=2.7",
+]
+# [serve] — everything [local] provides, PLUS the FastAPI HTTP surface so you
+# can self-host the reference backend.
+serve = [
+    "pydantic>=2.7",
+    "scikit-learn>=1.3",
+    "sentence-transformers>=2.7",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "aiohttp>=3.9",
+    "python-dotenv>=1.0",
+    "slowapi>=0.1.9",
+]
+# [full] — adds UMAP + HDBSCAN for the "heavy" clustering path. Optional.
+full = [
+    "pydantic>=2.7",
+    "scikit-learn>=1.3",
+    "sentence-transformers>=2.7",
+    "umap-learn>=0.5",
+    "hdbscan>=0.8",
 ]
 
 [project.scripts]

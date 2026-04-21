@@ -1,9 +1,8 @@
 # tracerCC — your AI coding, wrapped
 
-> One command. Reads your local Claude Code sessions (`~/.claude/projects/`) or
-> Cursor history. Returns a Spotify-Wrapped-style HTML showing exactly how much
-> money your model choice cost you, with a per-cluster receipt so you can audit
-> every dollar of the claim.
+> One command. Reads your local Claude Code / Cursor / custom-agent sessions.
+> Returns a Spotify-Wrapped-style HTML showing how much your model choice cost
+> you, with a per-cluster receipt so you can audit every dollar.
 
 ```
   ╭───────────────────────────────────────────────╮
@@ -11,18 +10,17 @@
   ╰───────────────────────────────────────────────╯
 
   source:           cursor   (auto-detected)
-  backend:          https://tracercc-backend-…run.app
+  backend:          in-process (local)
 
 → extracting cursor sessions ...
   → 42 sessions, 6,777 messages, 1,218 prompts in 0.7s
 → redacting prompt + response text (only tokens + tool summaries leave your machine)
-→ requesting analysis from backend ...
-  → POST … (340 KB gzip)  ← 200 in 8.5s
+→ running analysis in-process ...
 
   ✓ dashboard ready in 9.8s → ./tracer_wrapped.html
 
-  headline  $9 saveable on your $442 Opus spend (2.0%)
-            3 clustered patterns of mechanical work · 0 excluded · backend=kmeans
+  headline  $15 saveable on your $24 premium-tier spend (60.1%)
+            2 clustered patterns of mechanical work · 0 excluded · backend=kmeans
 ```
 
 …and a self-contained `tracer_wrapped.html` opens in your browser. Share it.
@@ -30,45 +28,61 @@ Print it. Tweet it.
 
 ---
 
-## One-liner
+## Open-core layout
+
+tracerCC is split into two parts with a sharp line between them:
+
+| Layer | What's in it | Where it lives |
+|---|---|---|
+| **Client** | Extract from `~/.claude/projects/`, `~/.cursor/`, or local JSONL. Redact prompt + response text. Render HTML. | This repo, `tracercc/` |
+| **Structural gate (open reference backend)** | Per-token pricing across Anthropic, OpenAI (incl. dot-named `gpt-5.2-…`), Google, xAI, Moonshot, Mistral, DeepSeek, Cursor. Mechanical-turn detection. Embedding (local MiniLM / optional BGE-M3). Density clustering. Family-aware counterfactual re-pricing. | This repo, `tracercc/backend/` |
+| **Behavioural parity gate** | Replay-on-cheaper-model + measure-agreement. The real Tracer thesis ported to agents. Mirrors the classification parity gate in [`adrida/tracer`](https://github.com/adrida/tracer). | **Hosted only** — not in this repo. |
+| **Cross-user pattern library** | Patterns observed across many tenants feed back into safer routing recommendations. | **Hosted only** — not in this repo. |
+
+The structural gate alone produces a defensible savings number. The behavioural
+gate upgrades "clustering says these 75 skill-manage calls are near-identical"
+to "…and we verified gpt-5-4-mini emits the same thing on held-out inputs." The
+latter is the tracerCC roadmap's moat, not a gate for the first click.
+
+---
+
+## Install
+
+```bash
+# Local-by-default: no network, no Cloudflare, no Cloud Run dependency.
+pip install 'tracercc[local]'
+tracercc                          # autodetect, open browser
+
+# Lite client — defers the analysis to the hosted backend.
+pip install tracercc
+tracercc --hosted
+
+# Self-host the reference backend for a team.
+pip install 'tracercc[serve]'
+tracercc serve --port 8080        # in another terminal:
+TRACERCC_BACKEND_URL=http://localhost:8080 tracercc --hosted
+```
+
+One-liner install (installs `uv` if needed):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/adrida/tracer_cc_test/main/install.sh | bash
-```
-
-That's it. The script installs [`uv`](https://docs.astral.sh/uv/) if you don't
-already have it, then runs `tracercc` via `uvx`. No global install, no venv to
-manage, no credentials to configure, no Docker.
-
-If you already have `uv`:
-
-```bash
-uvx --python 3.11 --from git+https://github.com/adrida/tracer_cc_test.git tracercc
-```
-
-Or with `pipx`:
-
-```bash
-pipx run --spec git+https://github.com/adrida/tracer_cc_test.git tracercc
 ```
 
 ---
 
 ## What gets sent off your machine — and what doesn't
 
-| Leaves your machine                                                | Stays on your machine            |
-| ------------------------------------------------------------------ | -------------------------------- |
-| Per-message token counts (input/output/cache)                      | **Your prompt text**             |
-| Model name + timestamp                                              | **Assistant response text**      |
-| Tool call names + a 200-char preview of the tool input             | **Thinking / reasoning blocks**  |
-| Per-session metadata (uuid, cwd, message count)                     | **File contents read by tools**  |
+| Leaves your machine (only with `--hosted`)                       | Stays on your machine           |
+| ---------------------------------------------------------------- | ------------------------------- |
+| Per-message token counts (input/output/cache)                    | **Your prompt text**            |
+| Model name + timestamp                                           | **Assistant response text**     |
+| Tool call names + a 200-char preview of the tool input           | **Thinking / reasoning blocks** |
+| Per-session metadata (uuid, cwd, message count)                  | **File contents read by tools** |
 
-The hosted analysis backend is stateless: it embeds the tool-call previews,
-clusters them, computes counterfactual costs against your actual token usage,
-and returns the report. Nothing is logged or persisted. Source for the backend
-is private; source for this client is right here.
-
-If you want a fully self-hosted setup, see *Self-hosting* below.
+With `tracercc[local]` (the default), nothing leaves the machine at all —
+analysis runs in-process and embeddings use a 384-dim `all-MiniLM-L6-v2`
+downloaded once into `~/.cache/huggingface`.
 
 ---
 
@@ -78,66 +92,78 @@ If you want a fully self-hosted setup, see *Self-hosting* below.
 | ------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `claude_code` | `~/.claude/projects/` exists                                   | Reads JSONL session logs.                                                              |
 | `cursor`      | `~/Library/Application Support/Cursor` (or `.config/Cursor/`)  | Reads agent transcripts + the `ai-code-tracking.db` SQLite file.                       |
+| `custom`      | `./traces/custom/*.jsonl` exists                               | Any agent framework. See `tracercc/sources/custom.py` docstring for the event schema.  |
 
-Force one with `--source claude_code` or `--source cursor`.
+Force one with `--source claude_code|cursor|custom`.
 
 ---
 
 ## Common flags
 
 ```bash
-tracercc                              # autodetect, open browser
+tracercc                              # autodetect, local analysis if extras installed
+tracercc --local                      # force in-process analysis (needs [local] extras)
+tracercc --hosted                     # force the hosted backend even if [local] is available
 tracercc --source cursor              # force the source
 tracercc --no-open                    # don't pop the browser
 tracercc --out ./report.html          # custom HTML path
 tracercc --json ./report.json         # also dump the raw report JSON
+tracercc serve --port 8080            # spin up the reference backend locally
 ```
 
 Env overrides:
 
 ```bash
-TRACERCC_BACKEND_URL=https://my.backend.example   # self-hosted analysis backend
+TRACERCC_BACKEND_URL=https://my.backend.example   # self-hosted or custom backend
 TRACERCC_BACKEND_TOKEN=…                          # bearer token if backend requires it
+TRACERCC_FORCE_LOCAL_EMBED=1                      # skip cloudflare even if creds are set
 ```
 
 ---
 
 ## How the saveable number is computed
 
-One paragraph:
+> For every assistant turn, we price it at its actual model's rate using the
+> bundled pricing table (Anthropic + OpenAI + Google + xAI + Moonshot + Mistral
+> + DeepSeek + Cursor). A turn enters the "mechanical" pool iff its output is
+> **only** tool calls (no reasoning text, no thinking blocks) AND all tool
+> names are in a generous whitelist (Bash / Read / Grep / Edit / TodoWrite /
+> skill_manage / memory / read_file / ...). Each mechanical turn is embedded
+> by its first tool-call text; density clustering groups near-identical
+> operations. **Only turns inside dense clusters are re-priced** at the
+> cheapest sibling in the same model family (gpt-5-4 → gpt-5-4-mini,
+> claude-opus → claude-haiku, gemini-pro → gemini-flash). Sparse / noisy turns
+> are excluded — visible in the dashboard's trust gauge. Result: a strictly
+> smaller number than naive arithmetic, but defensible per dollar.
 
-> We extract every assistant turn, identify the ones whose *only* output is a
-> mechanical tool call (`Bash` / `Read` / `Glob` / `Grep` / `Edit` /
-> `TodoWrite`), normalise the tool input into a short text (`Bash: ls -la
-> /path`), embed it with BGE-M3, and cluster (PCA + sklearn-HDBSCAN, falling
-> back to silhouette-tuned KMeans on small corpora). Only turns inside dense
-> clusters are re-priced at smaller-model rates. Sparse / noisy turns are
-> excluded — visible in the dashboard's trust gauge. The result is strictly
-> smaller than naive arithmetic but defensible per dollar: if 327 commands are
-> all near-identical to one medoid, by definition a smaller model can emit any
-> one of them.
-
-Pricing comes from Anthropic's published per-token rates, Cursor's
-[models-and-pricing docs](https://cursor.com/docs/models-and-pricing) for
-Auto / Composer-2 / Max-mode upcharges, and per-provider rates for everything
-in Cursor's API pool.
+The structural gate (what this repo ships) guarantees *evidence of repetition*.
+The behavioural gate (hosted) adds *evidence of agreement on held-out inputs* —
+that's the upgrade path that mirrors the classification Tracer's parity-gate.
 
 ---
 
-## Self-hosting the backend
-
-If you don't trust a hosted backend (or you want to run this on a corporate
-network), the `tracerCC_backend/` folder in the parent repo ships a single
-FastAPI service deployable to GCloud Cloud Run, Fly, Render, or any container
-host. It needs a Cloudflare Workers AI account (free tier handles thousands of
-runs).
+## Self-hosting the reference backend
 
 ```bash
-# in tracerCC_backend/
-gcloud run deploy tracercc-backend --source . \
-  --set-secrets CLOUDFLARE_ACCOUNT_ID=…:latest,CLOUDFLARE_AUTH_TOKEN=…:latest
-TRACERCC_BACKEND_URL="https://your-service.run.app" tracercc
+pip install 'tracercc[serve]'
+tracercc serve --host 0.0.0.0 --port 8080
+
+# From another machine (or the same one):
+TRACERCC_BACKEND_URL=http://your-host:8080 tracercc --hosted
 ```
+
+Docker / Cloud Run:
+
+```bash
+docker build -t tracercc-backend tracercc/backend
+docker run -p 8080:8080 tracercc-backend
+# or
+gcloud run deploy tracercc-backend --source tracercc/backend/
+```
+
+With no Cloudflare creds the backend uses `sentence-transformers/all-MiniLM-L6-v2`
+automatically. Set `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_AUTH_TOKEN` to upgrade
+to BGE-M3 (1024-dim, sharper clusters).
 
 ---
 
@@ -146,8 +172,8 @@ TRACERCC_BACKEND_URL="https://your-service.run.app" tracercc
 ```bash
 git clone https://github.com/adrida/tracer_cc_test.git
 cd tracer_cc_test
-uv pip install -e .
-tracercc --no-open
+uv pip install -e '.[local]'
+tracercc --local --no-open
 ```
 
 ## License
