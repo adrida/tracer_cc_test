@@ -100,11 +100,13 @@ PROJECTS_DIR = CUSTOM_DIR  # uniform API for autodetect
 # with timestamps only). ``TRACERCC_DEFAULT_MODEL`` tags every message whose
 # event has no ``model`` field so the family-aware mechanical gate can still
 # fire. ``TRACERCC_APPROX_TOKENS`` (default on) estimates input/output tokens
-# from content + reasoning char counts when ``input_tokens`` / ``output_tokens``
-# are absent — the dashboard surfaces this as "(approximate)".
+# from content + reasoning + tool-result + tools-schema char counts when
+# ``input_tokens`` / ``output_tokens`` are absent. The dashboard surfaces this
+# as "(approximate)". Default chars-per-token ratio is 3.5 (mixed English +
+# code/JSON, closer to OpenAI's real tokenisation than the English-only 4.0).
 DEFAULT_MODEL = os.environ.get("TRACERCC_DEFAULT_MODEL", "gpt-5-2")
 APPROX_TOKENS = os.environ.get("TRACERCC_APPROX_TOKENS", "1").lower() not in ("0", "false", "no")
-CHARS_PER_TOKEN = 4
+CHARS_PER_TOKEN = float(os.environ.get("TRACERCC_CHARS_PER_TOKEN", "3.5"))
 
 
 # --------------------------------------------------------------------------- #
@@ -254,21 +256,33 @@ def _parse_session(
     last_ts: pd.Timestamp | None = None
     last_assistant_uuid: str | None = None
 
-    # Pull session-level metadata from session_start events first.
+    # Pull session-level metadata from session_start events first, including
+    # the tools schema length (OpenAI rebills the full tools JSON on every turn
+    # so it's part of input_tokens on every assistant message).
+    tools_schema_chars = 0
     for ev in raw_events:
         if _norm_event(ev) == "session_start":
             cwd = ev.get("cwd") or cwd
             entrypoint = ev.get("entrypoint") or entrypoint
             primary_model = ev.get("model") or primary_model
+            tools = ev.get("tools")
+            if tools is not None:
+                try:
+                    tools_schema_chars = len(json.dumps(tools, default=str))
+                except Exception:
+                    tools_schema_chars = 0
     # Fall back to the global default model when the export doesn't tag one.
     # Without a model the downstream family-aware gate returns an empty set of
     # cheaper siblings and the whole session is dropped from clustering.
     if not primary_model:
         primary_model = DEFAULT_MODEL
 
-    # Running tallies for the chars/4 token estimator. Each assistant turn's
-    # input_tokens approximates "prior context it billed against" (cumulative
-    # session chars so far), and output_tokens approximates "this turn's text".
+    # Running tally for the chars/N token estimator. The cumulative char count
+    # approximates "prior context the next assistant turn bills against". We
+    # count every billable input source: user prompts, previous assistant
+    # text + reasoning, and tool-result content (which OpenAI rebills verbatim
+    # as part of the conversation history). The tools schema length is added
+    # per-turn on top (not cumulative — it rebills on every call either way).
     cumulative_input_chars = 0
 
     for i, ev in enumerate(raw_events):
@@ -332,12 +346,16 @@ def _parse_session(
             )
             last_assistant_uuid = ev_uuid
             # Token estimation fallback when the export doesn't record usage.
+            # Per-turn input = tools schema (rebilled every call) + cumulative
+            # conversation context so far. Per-turn output = this turn's content
+            # + reasoning.
             in_tok = ev.get("input_tokens")
             out_tok = ev.get("output_tokens")
             if APPROX_TOKENS and in_tok is None and out_tok is None:
-                in_tok = cumulative_input_chars // CHARS_PER_TOKEN
-                out_tok = (len(text or "") + thinking_chars) // CHARS_PER_TOKEN
-            # Advance cumulative input-char tally for the next assistant turn.
+                in_tok = int((cumulative_input_chars + tools_schema_chars) / CHARS_PER_TOKEN)
+                out_tok = int((len(text or "") + thinking_chars) / CHARS_PER_TOKEN)
+            # Advance cumulative input-char tally: this turn's output becomes
+            # context that later turns bill against.
             cumulative_input_chars += (len(text or "") + thinking_chars)
             messages.append({
                 "session_id": session_id, "project_dir": project_dir,
@@ -474,6 +492,20 @@ def _parse_session(
                 "error": _trunc(ev.get("message") or ev.get("error"), 400),
                 "message_preview": None,
             })
+
+        elif ev_name == "tool_result":
+            # A role=tool entry carrying the result that the NEXT assistant
+            # turn will bill against. Not a separate table row, but its content
+            # must feed cumulative_input_chars so the approximation reflects
+            # reality (tool results are often multi-KB of JSON).
+            tr_text = ev.get("content")
+            if isinstance(tr_text, list):
+                try:
+                    tr_text = json.dumps(tr_text, ensure_ascii=False, default=str)
+                except Exception:
+                    tr_text = str(tr_text)
+            if tr_text:
+                cumulative_input_chars += len(str(tr_text))
         # Everything else is silently ignored (forward-compatible).
 
     # Backfill n_tool_use_blocks on the assistant_message rows that own each
