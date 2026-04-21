@@ -177,6 +177,14 @@
     <b>${{ r.total_spend_usd|money(2) }}</b> total spend ·
     {{ r.earliest[:10] }} → {{ r.latest[:10] }}
   </div>
+  <div class="meta" style="margin-top:18px;padding:14px 18px;background:rgba(255,200,0,0.08);border-left:3px solid var(--orange);border-radius:4px;font-size:13px;line-height:1.55;">
+    <b>Data coverage caveat.</b> tracerCC prices only what's in the sessions you hand it.
+    If your provider dashboard shows a bigger bill, the gap is usually one of:
+    (a) OpenAI Chat Completions API only exports calls made with <code>store=true</code> — non-stored calls + Responses API calls are invisible to the listing endpoint;
+    (b) Cursor's <code>ai-code-tracking.db</code> covers Cursor's in-app model usage, not API-pool overflow;
+    (c) operational/gateway logs (Cloudflare Workers, sandbox backends) don't carry prompt + token payloads at all.
+    The <b>${{ r.total_spend_usd|money(2) }}</b> figure above is exactly what the traces in this run account for.
+  </div>
 </section>
 
 <!-- HEADLINE -->

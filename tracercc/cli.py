@@ -207,6 +207,10 @@ def main(argv: list[str] | None = None) -> int:
                   f"${premium:,.0f} premium-tier spend ({pct:.1f}%)")
             print(f"  \033[2m         {report.n_clusters} clustered patterns of mechanical work · "
                   f"{report.n_noise} excluded · backend={report.cluster_backend}\033[0m")
+            total = getattr(report, "total_spend_usd", 0) or 0
+            print(f"  \033[2m         covered ${total:,.2f} of priced activity across "
+                  f"{report.n_messages:,} messages. Provider dashboards may show a bigger number — "
+                  f"tracerCC prices only what's in the traces you handed it.\033[0m")
         except AttributeError:
             pass
         print()
