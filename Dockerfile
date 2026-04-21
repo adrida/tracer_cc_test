@@ -21,9 +21,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the package source and install with [serve] extras (fastapi + uvicorn
-# + aiohttp + pydantic + sklearn + slowapi + dotenv + torch + sentence-transformers).
-# We skip [full] — UMAP+HDBSCAN is optional and pulls numba/llvmlite which
-# balloons the cold-start time on Cloud Run.
+# + aiohttp + pydantic + sklearn + slowapi + dotenv). Torch and
+# sentence-transformers are deliberately NOT installed here — the backend calls
+# Cloudflare Workers AI BGE-M3 for embeddings, configured via env vars from
+# Secret Manager. Lean image, faster Cloud Run cold starts. If you want the
+# MiniLM fallback for air-gapped hosting, swap to ``.[serve-full]`` below.
 COPY pyproject.toml README.md ./
 COPY tracercc ./tracercc
 RUN pip install '.[serve]'
