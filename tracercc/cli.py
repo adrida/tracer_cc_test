@@ -3,18 +3,20 @@
 Run against your local Claude Code / Cursor / custom-agent data and get a
 Spotify-Wrapped-style HTML dashboard out the other side.
 
-Three modes for the analysis step:
+The client is intentionally thin: parse sessions on your machine, redact raw
+prompt + response text, POST the numeric+metadata payload to the hosted
+analysis backend. Pricing, clustering, and counterfactuals all run on our
+infra so users get the fastest startup and the latest rate tables without
+having to upgrade a local install.
 
-    $ tracercc                         # autodetect + hosted backend (default)
-    $ tracercc --local                 # in-process, zero network (needs [local] extras)
-    $ tracercc --backend-url URL ...   # self-hosted backend
+The reference backend source lives in ``tracercc/backend/`` for transparency
+and is self-hostable (see Dockerfile + deploy.sh at the repo root). For most
+users, just:
 
-Plus ``tracercc serve`` — spin up the reference backend locally on :8080.
-
-    $ tracercc --source cursor
+    $ tracercc                         # autodetect, use hosted backend
+    $ tracercc --source cursor         # force source
     $ tracercc --json report.json
     $ tracercc --no-open
-    $ TRACERCC_BACKEND_URL=http://… tracercc
 """
 
 from __future__ import annotations
@@ -46,14 +48,6 @@ def _banner() -> None:
     print("  │  \033[1mtracerCC\033[0m · your AI-coding wrapped           │")
     print("  ╰───────────────────────────────────────────────╯")
     print()
-
-
-def _have_local_backend() -> bool:
-    try:
-        import tracercc.backend.analyze  # noqa: F401
-        return True
-    except ImportError:
-        return False
 
 
 def cmd_serve(argv: list[str]) -> int:
@@ -100,10 +94,6 @@ def main(argv: list[str] | None = None) -> int:
                    help="Where to write the HTML dashboard. Default: ./tracer_wrapped.html")
     p.add_argument("--json", type=Path, default=None,
                    help="Optional path to also dump the raw report as JSON.")
-    p.add_argument("--local", action="store_true",
-                   help="Run analysis in-process (no network, needs [local] extras).")
-    p.add_argument("--hosted", action="store_true",
-                   help="Force the hosted backend even if [local] extras are installed.")
     p.add_argument("--backend-url", default=DEFAULT_BACKEND_URL,
                    help=f"Analysis backend URL. Default: {DEFAULT_BACKEND_URL}")
     p.add_argument("--backend-token", default=DEFAULT_BACKEND_TOKEN,
@@ -114,9 +104,6 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--version", action="version", version=f"tracerCC {__version__}")
     args = p.parse_args(argv)
 
-    # Default analysis mode: local if extras are installed and --hosted wasn't
-    # forced, hosted otherwise.
-    use_local = args.local or (_have_local_backend() and not args.hosted)
     progress = not args.quiet
     if progress:
         _banner()
@@ -130,9 +117,8 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 2
     if progress:
-        backend_label = "in-process (local)" if use_local else args.backend_url
         print(f"  source:           \033[1m{source}\033[0m")
-        print(f"  backend:          {backend_label}")
+        print(f"  backend:          {args.backend_url}")
 
     if progress:
         print()
@@ -150,45 +136,30 @@ def main(argv: list[str] | None = None) -> int:
         print("→ redacting prompt + response text (only tokens + tool summaries leave your machine)")
     payload = redact_tables(tables).to_dict()
 
-    if use_local:
-        if progress:
-            try:
-                from .backend.embedding import _pick_backend
-                embedder = _pick_backend()
-                print(f"→ running analysis in-process (embedder={embedder}) ...")
-            except ImportError:
-                print("→ running analysis in-process ...")
-        from .local_analyze import analyze_local
+    if progress:
+        print("→ requesting analysis from backend ...")
         try:
-            report = analyze_local(payload, source=source)
-        except RuntimeError as e:
-            print(f"\n  \033[31m✗\033[0m {e}", file=sys.stderr)
-            return 3
-    else:
-        if progress:
-            print("→ requesting analysis from backend ...")
-            try:
-                h = health(args.backend_url)
-                if not h.get("cf_configured"):
-                    print("  \033[33m!\033[0m backend reports cf_configured=false; "
-                          "analysis will use sentence-transformers or hashing fallback.")
-            except BackendError as e:
-                print(f"\n  \033[31m✗\033[0m {e}\n"
-                      f"    If your backend is self-hosted, verify: "
-                      f"curl {args.backend_url.rstrip('/')}/v1/health",
-                      file=sys.stderr)
-                return 3
-        try:
-            report = analyze(
-                payload,
-                source=source,
-                backend_url=args.backend_url,
-                backend_token=args.backend_token,
-                progress=progress,
-            )
+            h = health(args.backend_url)
+            if not h.get("cf_configured"):
+                print("  \033[33m!\033[0m backend reports cf_configured=false; "
+                      "embeddings will use the backend's hashing fallback.")
         except BackendError as e:
-            print(f"\n  \033[31m✗\033[0m {e}", file=sys.stderr)
+            print(f"\n  \033[31m✗\033[0m {e}\n"
+                  f"    Backend may be cold-starting; retry in ~10s.\n"
+                  f"    If self-hosted, verify: curl {args.backend_url.rstrip('/')}/v1/health",
+                  file=sys.stderr)
             return 3
+    try:
+        report = analyze(
+            payload,
+            source=source,
+            backend_url=args.backend_url,
+            backend_token=args.backend_token,
+            progress=progress,
+        )
+    except BackendError as e:
+        print(f"\n  \033[31m✗\033[0m {e}", file=sys.stderr)
+        return 3
 
     out_path = render_html(report, args.out)
     if args.json:
@@ -214,8 +185,8 @@ def main(argv: list[str] | None = None) -> int:
                   f"{report.n_noise} excluded · backend={report.cluster_backend}\033[0m")
             total = getattr(report, "total_spend_usd", 0) or 0
             print(f"  \033[2m         covered ${total:,.2f} of priced activity across "
-                  f"{report.n_messages:,} messages. Provider dashboards may show a bigger number — "
-                  f"tracerCC prices only what's in the traces you handed it.\033[0m")
+                  f"{report.n_messages:,} messages. Provider dashboards may show a bigger number —\n"
+                  f"  \033[2m         tracerCC prices only what's in the traces you handed it.\033[0m")
         except AttributeError:
             pass
         print()
