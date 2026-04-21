@@ -105,6 +105,10 @@ def main(argv: list[str] | None = None) -> int:
                          "carry and still be counted as mechanical. Default 0 (strict "
                          "tracer gate). Raise to e.g. 1000 for agents like GPT-5.2 that "
                          "auto-emit short chain-of-thought on every call."))
+    p.add_argument("--policy-out", type=Path, default=None,
+                   help=("Write the fitted routing policy to this JSON path. Defaults to "
+                         "./tracer_policy.json next to --out. Drop into your agent's "
+                         "OpenAI client via tracercc.runtime.Router.from_file(path)."))
     p.add_argument("--quiet", action="store_true", help="Suppress progress output.")
     p.add_argument("--version", action="version", version=f"tracerCC {__version__}")
     args = p.parse_args(argv)
@@ -172,12 +176,39 @@ def main(argv: list[str] | None = None) -> int:
         args.json.parent.mkdir(parents=True, exist_ok=True)
         args.json.write_text(_namespace_to_json(report))
 
+    # Serialise the fitted routing policy to disk — this is the actionable
+    # output Amine drops into his Hermes OpenAI client at runtime.
+    policy_out = args.policy_out or args.out.with_name("tracer_policy.json")
+    policy_ns = getattr(report, "routing_policy", None)
+    policy_written: Path | None = None
+    n_rules = 0
+    if policy_ns is not None:
+        from types import SimpleNamespace
+
+        def _to_plain(o):
+            if isinstance(o, SimpleNamespace):
+                return {k: _to_plain(v) for k, v in vars(o).items()}
+            if isinstance(o, list):
+                return [_to_plain(v) for v in o]
+            if isinstance(o, dict):
+                return {k: _to_plain(v) for k, v in o.items()}
+            return o
+
+        policy_plain = _to_plain(policy_ns)
+        if policy_plain.get("rules"):
+            policy_out.parent.mkdir(parents=True, exist_ok=True)
+            policy_out.write_text(json.dumps(policy_plain, indent=2, default=str))
+            policy_written = policy_out
+            n_rules = len(policy_plain["rules"])
+
     if progress:
         elapsed = time.time() - t0
         print()
         print(f"  \033[32m✓\033[0m dashboard ready in {elapsed:.1f}s → {out_path}")
         if args.json:
             print(f"  \033[32m✓\033[0m raw report          → {args.json}")
+        if policy_written:
+            print(f"  \033[32m✓\033[0m routing policy      → {policy_written}  ({n_rules} rules)")
         try:
             print()
             # Prefer the family-aware headline when populated; fall back to the

@@ -49,6 +49,8 @@ from .schema import (
     AnalyzeRequest,
     ClusterCard,
     FunStat,
+    RoutingPolicy,
+    RoutingRule,
     SessionCard,
     WrappedReport,
 )
@@ -279,6 +281,21 @@ async def analyze(req: AnalyzeRequest) -> WrappedReport:
 
     fun_stats = _build_fun_stats(sessions, errors, msgs, mech_w, top_clusters, tool_calls)
 
+    # Build the actionable routing policy from the gated clusters. Each rule
+    # maps a tool-name signature to a cheaper-sibling target model with
+    # per-cluster evidence. Runtime consumer: tracercc.runtime.Router.
+    routing_policy = _build_routing_policy(
+        gated=gated,
+        mech_w=mech_w,
+        emb=emb,
+        premium=premium,
+        premium_spend=premium_spend,
+        sessions=sessions,
+        n_sessions=int(len(sessions)),
+        span_days=span_days,
+        reasoning_threshold=reasoning_threshold,
+    )
+
     saving_pct_of_premium = (100 * save_cheapest_sibling / premium_spend) if premium_spend > 0 else 0.0
 
     return WrappedReport(
@@ -315,6 +332,7 @@ async def analyze(req: AnalyzeRequest) -> WrappedReport:
         top_clusters=top_clusters,
         top_sessions=top_sessions,
         fun_stats=fun_stats,
+        routing_policy=routing_policy,
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         backend_version=__version__,
         cluster_backend=backend,
@@ -371,6 +389,123 @@ def _build_fun_stats(
             detail="Each one is a retry on your dollar.",
         ))
     return out
+
+
+def _build_routing_policy(
+    gated: pd.DataFrame,
+    mech_w: pd.DataFrame,
+    emb: np.ndarray,
+    premium: pd.DataFrame,
+    premium_spend: float,
+    sessions: pd.DataFrame,
+    n_sessions: int,
+    span_days: int,
+    reasoning_threshold: int,
+) -> RoutingPolicy | None:
+    """Assemble per-cluster routing rules from the gated clustering output.
+
+    For every dense cluster that passed the structural gate, emit a rule
+    that says "when the session's most-recent assistant tool call matches
+    one of these names, route the NEXT call to <cheaper sibling>". The
+    runtime consumes this list of rules and rewrites the ``model`` param
+    on outgoing OpenAI calls whose signature matches.
+
+    Confidence is a coarse function of cluster size (more evidence = higher)
+    plus within-cluster embedding density (tighter = higher). This is the
+    structural-gate proxy for the behavioural parity gate that the hosted
+    tracerCC backend will add later.
+    """
+    if gated.empty:
+        return None
+
+    from .pricing import cheapest_sibling, resolve_pricing
+
+    dominant_overall_model = (
+        premium["model"].mode().iloc[0] if not premium["model"].mode().empty else ""
+    )
+
+    rules: list[RoutingRule] = []
+    for cid, sub in gated.groupby("turn_cluster"):
+        tool_names_seen = sorted({t for t in sub["tool_name"].dropna().unique()})
+        dominant_tool = sub["tool_name"].mode().iloc[0] if not sub["tool_name"].mode().empty else "?"
+        dominant_model = sub["model"].mode().iloc[0] if not sub["model"].mode().empty else dominant_overall_model
+        target = cheapest_sibling(dominant_model) or "(no cheaper sibling)"
+
+        n_turns = int(len(sub))
+        actual_usd = float(sub["estimated_usd"].fillna(0).sum())
+        if_cheap = float(sub.get("cost_if_cheapest_sibling", pd.Series([0] * n_turns)).fillna(0).sum())
+        save = max(actual_usd - if_cheap, 0.0)
+        per_call = save / n_turns if n_turns > 0 else 0.0
+        # Window projection: scale the observed savings to 30 days assuming
+        # steady-state traffic at the corpus' own rate.
+        window_scale = 30.0 / max(span_days, 1)
+        window_proj = save * window_scale
+
+        # Within-cluster cosine density → confidence proxy. Tight cluster
+        # with many turns = high; sparse or small = low.
+        idx = sub.index.to_numpy()
+        if len(idx) >= 2 and len(emb) > max(idx):
+            from sklearn.metrics.pairwise import cosine_distances
+            sub_emb = emb[idx]
+            d = cosine_distances(sub_emb)
+            iu = np.triu_indices_from(d, k=1)
+            avg_dist = float(d[iu].mean()) if iu[0].size else 1.0
+        else:
+            avg_dist = 1.0
+        # tight = avg_dist < 0.15, loose = > 0.35
+        if n_turns >= 50 and avg_dist < 0.15:
+            conf = "high"
+        elif n_turns >= 20 and avg_dist < 0.25:
+            conf = "medium"
+        else:
+            conf = "low"
+
+        # Heuristic predicate. The simplest usable runtime signature is:
+        # "the last assistant tool call in the session used one of these
+        # tool names." Compose it as a JSON-serialisable dict.
+        predicate = {
+            "type": "last_tool_call_name_in",
+            "tool_names": tool_names_seen,
+            "cluster_label": sub.iloc[0].get("tool_name") or dominant_tool,
+            "reasoning_threshold_chars": int(reasoning_threshold),
+        }
+
+        medoid = (
+            sub["embed_text"].iloc[0] if "embed_text" in sub.columns else ""
+        )
+        medoid = (medoid or "")[:240]
+
+        rules.append(RoutingRule(
+            rule_id=f"rule-{int(cid):03d}",
+            cluster_id=int(cid),
+            label=f"{dominant_tool} pattern",
+            predicate=predicate,
+            source_model=str(dominant_model),
+            target_model=str(target),
+            confidence=conf,
+            n_training_turns=n_turns,
+            medoid_example=medoid,
+            estimated_savings_per_call_usd=round(per_call, 6),
+            estimated_window_savings_usd=round(window_proj, 4),
+        ))
+
+    # Sort by projected window savings — biggest levers first.
+    rules.sort(key=lambda r: r.estimated_window_savings_usd, reverse=True)
+
+    return RoutingPolicy(
+        policy_version="1.0",
+        fitted_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        corpus_summary={
+            "sessions": n_sessions,
+            "assistant_turns": int(len(premium)),
+            "span_days": int(span_days),
+            "premium_spend_usd": round(float(premium_spend), 4),
+        },
+        default_model=str(dominant_overall_model) or "",
+        rules=rules,
+        gate="structural",
+        reasoning_threshold_chars=int(reasoning_threshold),
+    )
 
 
 def _no_premium_report(req, sessions, msgs, prompts, total_spend, opus_spend, sonnet_spend,

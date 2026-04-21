@@ -126,6 +126,47 @@ class ClusterCard(BaseModel):
     label: str
 
 
+class RoutingRule(BaseModel):
+    """A single actionable routing rule emitted by the fit stage.
+
+    Each rule maps an incoming-request signature (currently: the last tool
+    name observed in the session) to a target model to route to. Evidence is
+    from the structural cluster that generated it — size, dominant tool,
+    projected dollar savings.
+
+    Runtime (``tracercc.runtime.Router``) consumes a list of these and decides,
+    per OpenAI call, whether to rewrite the ``model`` parameter.
+    """
+    rule_id: str
+    cluster_id: int
+    label: str                           # human-readable description
+    predicate: dict                      # signature match rule (JSON-serialisable)
+    source_model: str                    # model this rule re-routes traffic AWAY from
+    target_model: str                    # cheaper sibling to route TO
+    confidence: str                      # "low" | "medium" | "high"
+    n_training_turns: int
+    medoid_example: str
+    estimated_savings_per_call_usd: float
+    estimated_window_savings_usd: float
+
+
+class RoutingPolicy(BaseModel):
+    """Offline-fit routing policy — the actionable output of tracerCC fit.
+
+    Drop the serialised JSON into a Hermes-style gateway and wrap every
+    chat-completions call through ``tracercc.runtime.Router.route(...)`` to
+    preempt the ``model`` parameter when the session's recent signature
+    matches one of the rules.
+    """
+    policy_version: str = "1.0"
+    fitted_at: str
+    corpus_summary: dict                 # {"sessions": N, "assistant_turns": N, "span_days": N, "premium_spend_usd": $}
+    default_model: str                   # fallback when no rule matches
+    rules: list[RoutingRule]
+    gate: str = "structural"             # "structural" | "behavioural"
+    reasoning_threshold_chars: int = 0   # the gate tightness used to fit the rules
+
+
 class SessionCard(BaseModel):
     session_short: str
     cwd: str
@@ -189,6 +230,9 @@ class WrappedReport(BaseModel):
     top_clusters: list[ClusterCard]
     top_sessions: list[SessionCard]
     fun_stats: list[FunStat]
+
+    # actionable output: drop-in routing policy derived from the structural gate
+    routing_policy: Optional[RoutingPolicy] = None
 
     # provenance
     generated_at: str
