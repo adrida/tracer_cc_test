@@ -113,6 +113,34 @@ class AnalyzeRequest(BaseModel):
 # Response — WrappedReport
 # --------------------------------------------------------------------------- #
 
+class ClusterMapPoint(BaseModel):
+    """One dot on the interactive cluster scatter.
+
+    Coordinates are a 2D projection (TSNE / PCA-2) of the high-dim embedding.
+    Each mechanical turn becomes one point; the dashboard renders them as
+    a D3 scatter coloured by cluster, with medoid-anchored cluster labels.
+    ``text`` is the truncated tool-call summary (already privacy-safe by
+    the time it reaches the backend), used for hover tooltips.
+    """
+    x: float
+    y: float
+    cluster_id: int                       # -1 = noise
+    tool_name: str
+    cost_usd: float
+    text: str                             # truncated tool-call summary
+
+
+class ClusterLabel(BaseModel):
+    """Centroid + human label for one cluster, placed on the scatter."""
+    cluster_id: int
+    x: float
+    y: float
+    label: str
+    dominant_tool: str
+    n_turns: int
+    confidence: str
+
+
 class ClusterCard(BaseModel):
     cluster_id: int
     n_turns: int
@@ -234,6 +262,10 @@ class WrappedReport(BaseModel):
 
     # actionable output: drop-in routing policy derived from the structural gate
     routing_policy: Optional[RoutingPolicy] = None
+
+    # interactive cluster map for the dashboard (2D projection of embeddings)
+    clustermap: list[ClusterMapPoint] = Field(default_factory=list)
+    cluster_labels: list[ClusterLabel] = Field(default_factory=list)
 
     # provenance
     generated_at: str

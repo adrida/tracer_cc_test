@@ -48,6 +48,8 @@ from .pricing import (
 from .schema import (
     AnalyzeRequest,
     ClusterCard,
+    ClusterLabel,
+    ClusterMapPoint,
     FunStat,
     RoutingPolicy,
     RoutingRule,
@@ -281,6 +283,9 @@ async def analyze(req: AnalyzeRequest) -> WrappedReport:
 
     fun_stats = _build_fun_stats(sessions, errors, msgs, mech_w, top_clusters, tool_calls)
 
+    # Build the interactive cluster map (2D projection + per-cluster labels).
+    clustermap, cluster_labels = _build_clustermap(mech_w, emb, top_clusters)
+
     # Build the actionable routing policy from the gated clusters. Each rule
     # maps a tool-name signature to a cheaper-sibling target model with
     # per-cluster evidence. Runtime consumer: tracercc.runtime.Router.
@@ -333,6 +338,8 @@ async def analyze(req: AnalyzeRequest) -> WrappedReport:
         top_sessions=top_sessions,
         fun_stats=fun_stats,
         routing_policy=routing_policy,
+        clustermap=clustermap,
+        cluster_labels=cluster_labels,
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         backend_version=__version__,
         cluster_backend=backend,
@@ -389,6 +396,111 @@ def _build_fun_stats(
             detail="Each one is a retry on your dollar.",
         ))
     return out
+
+
+def _build_clustermap(
+    mech_w: pd.DataFrame,
+    emb: np.ndarray,
+    top_clusters: list[ClusterCard],
+) -> tuple[list[ClusterMapPoint], list[ClusterLabel]]:
+    """Project mechanical-turn embeddings to 2D and pair with per-cluster labels.
+
+    Uses TSNE (sklearn, always available in [serve]) for better visual
+    separation than linear PCA. Falls back to PCA if TSNE fails or the corpus
+    is too small (< 5 points). Each turn becomes one point on the scatter;
+    cluster centroids get anchored labels.
+
+    Costs are mech_w.estimated_usd per turn — the frontend uses them for
+    point size so expensive patterns pop visually.
+    """
+    n = int(len(mech_w))
+    if n == 0 or emb.shape[0] == 0:
+        return [], []
+
+    # 2D projection
+    coords: np.ndarray
+    try:
+        if n >= 5:
+            from sklearn.manifold import TSNE
+            perp = max(5.0, min(30.0, (n - 1) / 3.0))
+            coords = TSNE(
+                n_components=2,
+                perplexity=perp,
+                random_state=42,
+                init="pca",
+                learning_rate="auto",
+                max_iter=500,
+                metric="cosine",
+            ).fit_transform(emb)
+        else:
+            from sklearn.decomposition import PCA
+            coords = PCA(n_components=min(2, emb.shape[0] - 1 or 1)).fit_transform(emb)
+            if coords.shape[1] == 1:
+                coords = np.column_stack([coords, np.zeros(n)])
+    except Exception:
+        try:
+            from sklearn.decomposition import PCA
+            coords = PCA(n_components=2).fit_transform(emb)
+        except Exception:
+            return [], []
+
+    # Rescale to a pleasant range for the frontend ([-50, 50] on each axis).
+    coords = np.asarray(coords, dtype=float)
+    for j in range(coords.shape[1]):
+        col = coords[:, j]
+        lo, hi = float(col.min()), float(col.max())
+        if hi > lo:
+            coords[:, j] = ((col - lo) / (hi - lo) - 0.5) * 100.0
+        else:
+            coords[:, j] = 0.0
+
+    mech_w = mech_w.reset_index(drop=True)
+    labels = mech_w["turn_cluster"].to_numpy() if "turn_cluster" in mech_w.columns else np.full(n, -1)
+    tool_names = mech_w["tool_name"].fillna("?").to_numpy() if "tool_name" in mech_w.columns else np.full(n, "?")
+    texts = mech_w["embed_text"].fillna("").astype(str).to_numpy() if "embed_text" in mech_w.columns else np.full(n, "")
+    costs = mech_w["estimated_usd"].fillna(0).astype(float).to_numpy() if "estimated_usd" in mech_w.columns else np.zeros(n)
+
+    points: list[ClusterMapPoint] = []
+    for i in range(n):
+        points.append(ClusterMapPoint(
+            x=float(coords[i, 0]),
+            y=float(coords[i, 1]),
+            cluster_id=int(labels[i]),
+            tool_name=str(tool_names[i])[:40],
+            cost_usd=float(costs[i]),
+            text=str(texts[i])[:160],
+        ))
+
+    # Per-cluster labels (centroid + metadata from the ClusterCard cards already built).
+    labels_by_cluster: dict[int, ClusterCard] = {c.cluster_id: c for c in top_clusters}
+    cluster_labels: list[ClusterLabel] = []
+    for cid in sorted({int(l) for l in labels} - {-1}):
+        mask = labels == cid
+        cx = float(coords[mask, 0].mean())
+        cy = float(coords[mask, 1].mean())
+        card = labels_by_cluster.get(cid)
+        # pull confidence back off the routing-rule confidence policy bridge
+        # (we don't have it yet here — just use size thresholds mirroring the
+        # rule heuristic so the plot and the policy table agree).
+        n_turns = int(mask.sum())
+        if card is None:
+            lab = f"cluster {cid}"
+            dom = str(tool_names[mask][0]) if mask.any() else "?"
+        else:
+            lab = card.label
+            dom = card.dominant_tool
+        if n_turns >= 50:
+            conf = "high"
+        elif n_turns >= 20:
+            conf = "medium"
+        else:
+            conf = "low"
+        cluster_labels.append(ClusterLabel(
+            cluster_id=cid, x=cx, y=cy, label=lab[:60],
+            dominant_tool=dom[:40], n_turns=n_turns, confidence=conf,
+        ))
+
+    return points, cluster_labels
 
 
 def _build_routing_policy(

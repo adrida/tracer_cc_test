@@ -192,16 +192,103 @@ def _str(obj, n: int = 600) -> str | None:
 # --------------------------------------------------------------------------- #
 
 def iter_session_files(root: Path = CUSTOM_DIR) -> Iterator[tuple[str, Path]]:
-    """Yield (project_dir_name, jsonl_path) for every *.jsonl under root."""
+    """Yield (project_dir_name, path) for every per-session file under root.
+
+    Supports two shapes:
+      1. ``*.jsonl`` — one JSON object per line (streaming format).
+      2. ``session_*.json`` — a single dict with ``session_id``, ``model``,
+         ``tools``, and ``messages``: list[...]. This is the shape Hermes-style
+         agents emit when they dump a completed session in one shot. Takes
+         precedence over a ``.jsonl`` with the same session id (the single-dump
+         is authoritative — it carries ``model`` and the full tools schema).
+
+    Skips ``request_dump_*.json`` (error-only per-request logs) and
+    ``sessions.json`` (the top-level session registry index).
+    """
     if not root.exists():
         return
-    for jsonl in sorted(root.rglob("*.jsonl")):
-        project_dir = "custom" if jsonl.parent == root else jsonl.parent.name
-        yield project_dir, jsonl
+    import re
+    _id_re = re.compile(r"([0-9]{8}_[0-9]{6}_[0-9a-f]+)")
+
+    # First pass — collect session_*.json files and the session-ids they cover.
+    json_files: list[Path] = []
+    covered_ids: set[str] = set()
+    for p in sorted(root.rglob("session_*.json")):
+        name = p.name
+        if name.startswith("request_dump_") or name == "sessions.json":
+            continue
+        json_files.append(p)
+        m = _id_re.search(name)
+        if m:
+            covered_ids.add(m.group(1))
+
+    # JSONL files that aren't shadowed by a .json dump get emitted.
+    for p in sorted(root.rglob("*.jsonl")):
+        m = _id_re.search(p.name)
+        if m and m.group(1) in covered_ids:
+            continue  # prefer the .json dump (authoritative model + tools)
+        project_dir = "custom" if p.parent == root else p.parent.name
+        yield project_dir, p
+
+    for p in json_files:
+        project_dir = "custom" if p.parent == root else p.parent.name
+        yield project_dir, p
 
 
-def _iter_events(jsonl_path: Path) -> Iterator[dict]:
-    with jsonl_path.open("r", encoding="utf-8", errors="replace") as fh:
+def _iter_events(path: Path) -> Iterator[dict]:
+    """Normalise a session file into a stream of events.
+
+    JSONL files (one object per line) pass through unchanged. Single-dict
+    JSON dumps (``{session_id, model, tools, messages: [...]}``) are converted
+    into a synthesised ``session_meta`` event followed by the message array
+    so the rest of the parser can treat them uniformly.
+    """
+    # Single-dict JSON dumps ("session_YYYYMMDD_*.json" shape from Hermes-style
+    # agents): convert into a synthesised event stream.
+    if path.suffix.lower() == ".json":
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as fh:
+                d = json.load(fh)
+        except Exception:
+            return
+        if not isinstance(d, dict) or "messages" not in d:
+            return
+        sid = d.get("session_id") or path.stem
+        session_start = d.get("session_start") or d.get("created_at")
+        # Synthesise a session_meta line.
+        yield {
+            "role": "session_meta",
+            "session_id": sid,
+            "model": d.get("model"),
+            "platform": d.get("platform"),
+            "tools": d.get("tools") or [],
+            "timestamp": session_start,
+        }
+        # Walk the messages array. Hermes dumps don't put timestamps on every
+        # individual message — synthesise monotonic ones from session_start
+        # so the downstream ordering stays stable.
+        import datetime
+        base_ts = None
+        if session_start:
+            try:
+                base_ts = datetime.datetime.fromisoformat(session_start.replace("Z", "+00:00"))
+            except Exception:
+                base_ts = None
+        for j, m in enumerate(d.get("messages") or []):
+            if not isinstance(m, dict):
+                continue
+            ts = m.get("timestamp")
+            if not ts and base_ts is not None:
+                ts = (base_ts + datetime.timedelta(milliseconds=j)).isoformat()
+            yield {
+                **m,
+                "session_id": sid,
+                "timestamp": ts or m.get("timestamp"),
+            }
+        return
+
+    # Classic JSONL stream: one event per line.
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
         for raw in fh:
             raw = raw.strip()
             if not raw:

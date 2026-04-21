@@ -153,61 +153,316 @@
 </head>
 <body>
 
-{# Prefer the family-aware headline (populated by backend >=0.3.0) and fall back
-   to the legacy Anthropic-specific one when the backend is older or the corpus
-   is Claude-only. `hero_save` / `hero_premium` / `hero_pct` are the values the
-   hero + headline sections use throughout. #}
 {% set hero_save = (r.saving_cheapest_sibling_usd or 0) if (r.saving_cheapest_sibling_usd or 0) > 0 else r.saving_haiku_usd %}
 {% set hero_premium = (r.premium_spend_usd or 0) if (r.premium_spend_usd or 0) > 0 else r.opus_spend_usd %}
 {% set hero_pct = (r.saving_cheapest_sibling_pct_of_premium or 0) if (r.saving_cheapest_sibling_pct_of_premium or 0) > 0 else r.saving_haiku_pct_of_opus %}
-{% set hero_label = "premium-tier" if (r.saving_cheapest_sibling_usd or 0) > 0 else "Opus" %}
+{% set rp = r.routing_policy %}
+{% set rules = rp.rules if rp else [] %}
+{% set n_rules = rules|length %}
+{% set window_save_total = 0 %}
+{% if rules %}
+  {% for rl in rules %}{% set window_save_total = window_save_total + rl.estimated_window_savings_usd %}{% endfor %}
+{% endif %}
+{% set span = r.span_days if r.span_days else 1 %}
+{% set projected_monthly_save = (hero_save * 30 / span) if span else 0 %}
+{% set n_high = 0 %}{% set n_med = 0 %}{% set n_low = 0 %}
+{% if rules %}
+  {% for rl in rules %}
+    {% if rl.confidence == "high" %}{% set n_high = n_high + 1 %}
+    {% elif rl.confidence == "medium" %}{% set n_med = n_med + 1 %}
+    {% else %}{% set n_low = n_low + 1 %}{% endif %}
+  {% endfor %}
+{% endif %}
 
-<!-- HERO -->
+<!-- HERO: policy-led, not diagnostic-led -->
 <section class="hero">
-  <div class="label">tracerCC · your AI coding, wrapped</div>
-  <h1>You can save <em>${{ hero_save|money }}</em><br>of your AI-coding bill.</h1>
+  <div class="label">tracerCC · fitted routing policy</div>
+  {% if n_rules > 0 %}
+  <h1>Deploy <em>{{ n_rules }}</em> routing rules.<br>Save ~<em>${{ projected_monthly_save|money }}</em>/mo.</h1>
   <p class="sub">
-    From {{ r.n_sessions }} sessions over the last {{ r.span_days }} days, we found
-    <b>{{ r.n_clusters }} clusters of mechanical work</b>
-    where the {{ hero_label }} model was billed for operations a cheaper sibling
-    in the same model family could have emitted just as well. No quality downgrade.
+    Fitted on <b>{{ r.n_sessions|number }} of your own sessions</b> ({{ r.n_messages|number }} messages, {{ r.span_days }} days).
+    Every rule maps a tool-call pattern your agent repeats to a cheaper sibling in the same model family.
+    Per-rule evidence below; strict-gate by default.
   </p>
+  {% else %}
+  <h1>No routable patterns found.</h1>
+  <p class="sub">
+    From {{ r.n_sessions }} sessions over {{ r.span_days }} days we couldn't find dense clusters of
+    mechanical work above the confidence bar. Either the corpus is too small or the workload
+    is genuinely novel per turn. Run again after more traffic.
+  </p>
+  {% endif %}
   <div class="meta">
-    <b>{{ r.n_messages|number }}</b> messages · <b>{{ r.n_prompts }}</b> prompts ·
-    <b>${{ r.total_spend_usd|money(2) }}</b> total spend ·
+    <b>${{ hero_premium|money }}</b> priced spend · <b>${{ hero_save|money(2) }}</b> saveable in window ({{ hero_pct|money(1) }}%) ·
     {{ r.earliest[:10] }} → {{ r.latest[:10] }}
   </div>
-  <div class="meta" style="margin-top:18px;padding:14px 18px;background:rgba(255,200,0,0.08);border-left:3px solid var(--orange);border-radius:4px;font-size:13px;line-height:1.55;">
-    <b>Data coverage caveat.</b> tracerCC prices only what's in the sessions you hand it.
-    If your provider dashboard shows a bigger bill, the gap is usually one of:
-    (a) OpenAI Chat Completions API only exports calls made with <code>store=true</code> — non-stored calls + Responses API calls are invisible to the listing endpoint;
-    (b) Cursor's <code>ai-code-tracking.db</code> covers Cursor's in-app model usage, not API-pool overflow;
-    (c) operational/gateway logs (Cloudflare Workers, sandbox backends) don't carry prompt + token payloads at all.
-    The <b>${{ r.total_spend_usd|money(2) }}</b> figure above is exactly what the traces in this run account for.
+</section>
+
+{% if n_rules > 0 %}
+<!-- THE POLICY: the actionable output -->
+<section>
+  <h2>The <span class="accent">policy</span></h2>
+  <p class="lede">
+    One row per rule. <b>Confidence</b> comes from cluster size + embedding density —
+    start with <code>high</code>-only in production, loosen as the refit flywheel earns trust.
+  </p>
+  <div class="kpis" style="margin-bottom:40px;">
+    <div class="kpi"><div class="k">Rules fitted</div><div class="v num">{{ n_rules }}</div><div class="d">from {{ r.n_mechanical_turns|number }} mechanical turns</div></div>
+    <div class="kpi"><div class="k">High confidence</div><div class="v num" style="color:var(--green)">{{ n_high }}</div><div class="d">safe for day-one rollout</div></div>
+    <div class="kpi"><div class="k">Medium</div><div class="v num" style="color:var(--orange)">{{ n_med }}</div><div class="d">enable after telemetry</div></div>
+    <div class="kpi"><div class="k">Projected /mo</div><div class="v num" style="color:var(--green)">${{ window_save_total|money }}</div><div class="d">30d extrapolation, all rules</div></div>
+  </div>
+  <div style="overflow-x:auto;background:var(--card);border:1px solid var(--card-border);border-radius:16px;">
+  <table style="width:100%;border-collapse:collapse;font-size:14px;">
+    <thead>
+      <tr style="color:var(--fg-dim);text-transform:uppercase;letter-spacing:0.08em;font-size:11px;">
+        <th style="text-align:left;padding:14px 18px;">rule</th>
+        <th style="text-align:left;padding:14px 8px;">pattern</th>
+        <th style="text-align:center;padding:14px 8px;">conf.</th>
+        <th style="text-align:right;padding:14px 8px;">n turns</th>
+        <th style="text-align:left;padding:14px 8px;">route</th>
+        <th style="text-align:right;padding:14px 8px;">$/call</th>
+        <th style="text-align:right;padding:14px 18px;">$/30d</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for rl in rules %}
+      <tr style="border-top:1px solid var(--card-border);">
+        <td class="mono" style="padding:14px 18px;color:var(--fg-dim);">{{ rl.rule_id }}</td>
+        <td style="padding:14px 8px;max-width:360px;">
+          <div style="font-weight:600;">{{ rl.label }}</div>
+          <div class="mono" style="color:var(--fg-dim);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ rl.medoid_example }}</div>
+        </td>
+        <td style="text-align:center;padding:14px 8px;">
+          {% if rl.confidence == "high" %}<span style="color:var(--green);font-weight:700;">● high</span>{% elif rl.confidence == "medium" %}<span style="color:var(--orange);font-weight:700;">● med</span>{% else %}<span style="color:var(--fg-dim);">○ low</span>{% endif %}
+        </td>
+        <td style="text-align:right;padding:14px 8px;font-variant-numeric:tabular-nums;">{{ rl.n_training_turns }}</td>
+        <td class="mono" style="padding:14px 8px;font-size:12px;">
+          <div>{{ rl.source_model }}</div>
+          <div style="color:var(--green);">→ {{ rl.target_model }}</div>
+        </td>
+        <td style="text-align:right;padding:14px 8px;font-variant-numeric:tabular-nums;">${{ rl.estimated_savings_per_call_usd|money(4) }}</td>
+        <td style="text-align:right;padding:14px 18px;font-variant-numeric:tabular-nums;font-weight:600;color:var(--green);">${{ rl.estimated_window_savings_usd|money }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
   </div>
 </section>
 
-<!-- HEADLINE -->
+<!-- HOW TO DEPLOY -->
 <section>
-  <div class="label" style="text-transform:uppercase;letter-spacing:.18em;color:var(--green);font-size:13px;font-weight:600;margin-bottom:24px;">
-    the number that matters
+  <h2>Deploy in <span class="accent">8 lines</span></h2>
+  <p class="lede">
+    Drop the runtime into whatever function wraps <code>openai.chat.completions.create</code>
+    in your agent gateway. The router rewrites the <code>model</code> parameter when the
+    session signature matches a rule; otherwise pass-through.
+  </p>
+  <pre style="background:var(--bg-1);padding:24px;border-radius:12px;overflow-x:auto;font-size:13px;line-height:1.55;border:1px solid var(--card-border);"><code class="mono">from tracercc.runtime import Router
+import openai
+
+router = Router.from_file("./tracer_policy.json", min_confidence="high")
+
+def chat(messages, tools, default_model="{{ rp.default_model if rp else 'gpt-5-2' }}"):
+    model, rule_id = router.route(messages=messages, tools=tools)
+    result = openai.chat.completions.create(
+        model=model or default_model, messages=messages, tools=tools,
+    )
+    router.record(rule_id, result)   # optional — feeds the refit flywheel
+    return result</code></pre>
+  <p class="lede" style="margin-top:32px;">
+    <b>Recommended rollout:</b> start at <code>min_confidence="high"</code>
+    ({{ n_high }} rule{{ 's' if n_high != 1 else '' }}, lowest risk, ~${{ ((window_save_total * n_high / (n_rules or 1)) if n_high else 0)|money }}/mo).
+    After a week of telemetry (via <code>router.record()</code>), loosen to
+    <code>"medium"</code> to unlock the rest. Re-run <code>tracercc</code> on the new
+    traces anytime — the refit drops rules whose <code>ok=False</code> rate was high.
+  </p>
+</section>
+
+{% if r.clustermap %}
+<!-- INTERACTIVE CLUSTER MAP (D3, no Plotly) -->
+<section>
+  <h2>Your workloads, <span class="accent">clustered</span></h2>
+  <p class="lede">
+    Every dot is one mechanical turn from your traces, projected to 2D via TSNE
+    on the BGE-M3 embedding of its tool-call payload. Turns that cluster together
+    emit near-identical tool calls — that's the structural evidence behind each rule.
+    <b>Hover a dot</b> to see the exact call. <b>Click a cluster label</b> to filter.
+  </p>
+  <div id="clustermap-root" style="position:relative;background:var(--bg-1);border:1px solid var(--card-border);border-radius:16px;padding:0;margin-top:24px;">
+    <div id="clustermap-legend" style="position:absolute;top:16px;left:20px;z-index:2;font-size:12px;color:var(--fg-dim);max-width:320px;line-height:1.5;pointer-events:none;">
+      <div style="color:var(--fg);font-weight:600;margin-bottom:6px;">{{ r.n_mechanical_turns|number }} mechanical turns · {{ r.n_clusters }} dense clusters · {{ r.n_noise }} noise</div>
+      each colour = one gated cluster · radius ∝ $ cost of the turn<br>
+      <span style="color:#555;">gray dots</span> are turns HDBSCAN couldn't confidently group (excluded from the policy by design)
+    </div>
+    <div id="clustermap-filter" style="position:absolute;top:16px;right:20px;z-index:2;font-size:12px;color:var(--green);cursor:pointer;display:none;">
+      ✕ clear filter
+    </div>
+    <svg id="clustermap-svg" viewBox="-60 -60 120 120" preserveAspectRatio="xMidYMid meet"
+         style="width:100%;height:600px;display:block;"></svg>
+    <div id="clustermap-tooltip" style="position:absolute;pointer-events:none;background:var(--bg-0);border:1px solid var(--card-border);border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.5;max-width:360px;opacity:0;transition:opacity .08s;z-index:3;box-shadow:0 8px 24px rgba(0,0,0,0.4);"></div>
   </div>
-  <p class="bignum"><span class="ccy">$</span>{{ hero_save|money }}</p>
-  <p class="bigsub">
-    That's <b>{{ hero_pct|money(1) }}%</b> of your
-    <b>${{ hero_premium|money }}</b> {{ hero_label }} spend, recoverable by routing
-    {{ r.n_clusters }} clusters of mechanical work to a cheaper sibling model.
-    Quality-preserving by construction: each cluster contains
-    <b>{{ r.n_mechanical_turns // r.n_clusters if r.n_clusters else 0 }}+ near-identical commands on average</b>
-    — by definition, a smaller model can emit any one of them.
+  <p class="lede" style="margin-top:24px;font-size:14px;">
+    <b>Reading the map</b> — tight, tightly-coloured blobs are the rules the policy is confident in (many
+    similar calls close together in semantic space). Wide, sparse regions are noise the structural gate deliberately
+    excludes: not enough repetition to guarantee quality if we re-routed them. That's what "tracer discipline" means
+    in practice — only claim savings where the evidence is dense.
+  </p>
+</section>
+
+<script>
+(function() {
+  const POINTS = [
+    {% for p in r.clustermap %}
+    {x:{{ p.x }},y:{{ p.y }},cluster_id:{{ p.cluster_id }},tool_name:{{ p.tool_name | tojson }},cost_usd:{{ p.cost_usd }},text:{{ p.text | tojson }}},
+    {% endfor %}
+  ];
+  const LABELS = [
+    {% for l in r.cluster_labels %}
+    {cluster_id:{{ l.cluster_id }},x:{{ l.x }},y:{{ l.y }},label:{{ l.label | tojson }},dominant_tool:{{ l.dominant_tool | tojson }},n_turns:{{ l.n_turns }},confidence:{{ l.confidence | tojson }}},
+    {% endfor %}
+  ];
+  const svg = document.getElementById('clustermap-svg');
+  const tip = document.getElementById('clustermap-tooltip');
+  const root = document.getElementById('clustermap-root');
+  const filter = document.getElementById('clustermap-filter');
+  if (!POINTS.length) return;
+
+  // Nice deterministic palette — cluster id → colour
+  const PALETTE = [
+    '#1dd66b', '#ffb547', '#b18cff', '#ff5b5b', '#5ec4ff',
+    '#f97ae0', '#ffd83d', '#4dd4c1', '#ff8c42', '#8cf4a1',
+    '#c890ff', '#ff6b9d', '#7be0d8', '#ffb3ba', '#84b1ff',
+    '#bae67e', '#fff1a8', '#e9a3ff', '#ffa07a', '#9fd3c7',
+    '#ffcc70', '#b5e5cf', '#f1bbd9', '#a8d8ea', '#d4a5a5',
+    '#fedfe1',
+  ];
+  const colorFor = (cid) => cid < 0 ? '#454545' : PALETTE[cid % PALETTE.length];
+
+  // Size scale — sqrt-normalised so cost differences read without one point dominating
+  const maxCost = Math.max(...POINTS.map(p => p.cost_usd || 0), 0.001);
+  const radiusFor = (cost) => 0.35 + 1.6 * Math.sqrt((cost || 0) / maxCost);
+
+  // Render noise first (behind), then clusters (on top), labels topmost
+  const byZ = POINTS.slice().sort((a, b) => (a.cluster_id < 0 ? -1 : 1) - (b.cluster_id < 0 ? -1 : 1));
+
+  const NS = 'http://www.w3.org/2000/svg';
+  let activeFilter = null;
+
+  function applyFilter(cid) {
+    activeFilter = cid;
+    filter.style.display = cid == null ? 'none' : 'block';
+    svg.querySelectorAll('circle').forEach(c => {
+      const cc = parseInt(c.getAttribute('data-cluster'));
+      const visible = cid == null || cc === cid;
+      c.setAttribute('opacity', visible ? (cc < 0 ? 0.35 : 0.85) : 0.05);
+    });
+    svg.querySelectorAll('.cluster-label').forEach(g => {
+      const cc = parseInt(g.getAttribute('data-cluster'));
+      g.setAttribute('opacity', cid == null || cc === cid ? 1 : 0.15);
+    });
+  }
+  filter.addEventListener('click', () => applyFilter(null));
+
+  byZ.forEach(p => {
+    const c = document.createElementNS(NS, 'circle');
+    c.setAttribute('cx', p.x);
+    c.setAttribute('cy', p.y);
+    c.setAttribute('r', radiusFor(p.cost_usd));
+    c.setAttribute('fill', colorFor(p.cluster_id));
+    c.setAttribute('opacity', p.cluster_id < 0 ? 0.35 : 0.85);
+    c.setAttribute('data-cluster', p.cluster_id);
+    c.addEventListener('mouseover', (e) => {
+      tip.innerHTML = `
+        <div style="color:var(--green);font-weight:600;margin-bottom:4px;">${p.tool_name}${p.cluster_id >= 0 ? ` <span style="color:var(--fg-dim);font-weight:400;">· cluster ${p.cluster_id}</span>` : ' <span style="color:#888;font-weight:400;">· noise</span>'}</div>
+        <div style="font-family:ui-monospace,monospace;color:var(--fg-dim);font-size:11px;word-break:break-all;">${(p.text || '').replace(/</g, '&lt;').slice(0, 240)}</div>
+        <div style="color:var(--fg-dim);margin-top:6px;">$${(p.cost_usd || 0).toFixed(4)} · this turn</div>
+      `;
+      tip.style.opacity = '1';
+    });
+    c.addEventListener('mousemove', (e) => {
+      const rect = root.getBoundingClientRect();
+      let x = e.clientX - rect.left + 14;
+      let y = e.clientY - rect.top + 14;
+      if (x + 380 > rect.width) x = e.clientX - rect.left - 380;
+      if (y + 120 > rect.height) y = e.clientY - rect.top - 120;
+      tip.style.left = x + 'px';
+      tip.style.top = y + 'px';
+    });
+    c.addEventListener('mouseout', () => { tip.style.opacity = '0'; });
+    svg.appendChild(c);
+  });
+
+  // Cluster labels — anchored at centroid
+  LABELS.forEach(l => {
+    const g = document.createElementNS(NS, 'g');
+    g.setAttribute('transform', `translate(${l.x},${l.y})`);
+    g.setAttribute('class', 'cluster-label');
+    g.setAttribute('data-cluster', l.cluster_id);
+    g.style.cursor = 'pointer';
+    // small halo
+    const halo = document.createElementNS(NS, 'circle');
+    halo.setAttribute('r', 3.5);
+    halo.setAttribute('fill', 'none');
+    halo.setAttribute('stroke', colorFor(l.cluster_id));
+    halo.setAttribute('stroke-width', 0.6);
+    halo.setAttribute('opacity', 0.8);
+    g.appendChild(halo);
+    // label text — centre-anchored, with a dark stroke so it reads on any background
+    const t = document.createElementNS(NS, 'text');
+    t.setAttribute('x', 0);
+    t.setAttribute('y', -5);
+    t.setAttribute('text-anchor', 'middle');
+    t.setAttribute('fill', '#f4f7f5');
+    t.setAttribute('stroke', 'rgba(5,5,7,0.85)');
+    t.setAttribute('stroke-width', 0.6);
+    t.setAttribute('paint-order', 'stroke fill');
+    t.setAttribute('font-size', '3.2');
+    t.setAttribute('font-weight', '700');
+    t.textContent = l.label;
+    g.appendChild(t);
+    // secondary line: n_turns · confidence
+    const t2 = document.createElementNS(NS, 'text');
+    t2.setAttribute('x', 0);
+    t2.setAttribute('y', -1.2);
+    t2.setAttribute('text-anchor', 'middle');
+    t2.setAttribute('fill', colorFor(l.cluster_id));
+    t2.setAttribute('stroke', 'rgba(5,5,7,0.85)');
+    t2.setAttribute('stroke-width', 0.4);
+    t2.setAttribute('paint-order', 'stroke fill');
+    t2.setAttribute('font-size', '2.2');
+    t2.setAttribute('font-weight', '600');
+    t2.textContent = `${l.n_turns}× · ${l.confidence}`;
+    g.appendChild(t2);
+    g.addEventListener('click', () => applyFilter(activeFilter === l.cluster_id ? null : l.cluster_id));
+    svg.appendChild(g);
+  });
+})();
+</script>
+{% endif %}
+
+<!-- EVIDENCE (diagnostic data, now framed as "why these rules hold") -->
+<section>
+  <h2>Why these rules <span class="accent">hold</span></h2>
+  <p class="lede">
+    Every rule above comes from structural evidence of repetition — not naive
+    "all of my Opus spend is saveable" arithmetic. The numbers below show the
+    corpus it was fitted on.
   </p>
   <div class="kpis">
-    <div class="kpi"><div class="k">Total spend</div><div class="v num">${{ r.total_spend_usd|money }}</div><div class="d">Across all models, all sessions</div></div>
-    <div class="kpi"><div class="k">{{ hero_label }} spend</div><div class="v num">${{ hero_premium|money }}</div><div class="d">{{ 100 * hero_premium / r.total_spend_usd if r.total_spend_usd else 0|money }}% of bill</div></div>
-    <div class="kpi"><div class="k">→ cheapest sibling</div><div class="v num" style="color:var(--green)">${{ hero_save|money }}</div><div class="d">In-family downgrade on gated turns</div></div>
-    <div class="kpi"><div class="k">→ Haiku save (ref)</div><div class="v num" style="color:var(--orange)">${{ r.saving_haiku_usd|money }}</div><div class="d">Claude Haiku target (legacy)</div></div>
+    <div class="kpi"><div class="k">Total priced</div><div class="v num">${{ r.total_spend_usd|money }}</div><div class="d">across all models + sessions</div></div>
+    <div class="kpi"><div class="k">Premium tier</div><div class="v num">${{ hero_premium|money }}</div><div class="d">turns with a cheaper sibling available</div></div>
+    <div class="kpi"><div class="k">Gated in rules</div><div class="v num" style="color:var(--green)">${{ hero_save|money }}</div><div class="d">{{ hero_pct|money(1) }}% of premium</div></div>
+    <div class="kpi"><div class="k">Excluded</div><div class="v num" style="color:var(--fg-dim)">${{ r.spend_excluded_usd|money }}</div><div class="d">{{ r.n_noise }} noise turns, not in any dense cluster</div></div>
+  </div>
+  <div class="meta" style="margin-top:24px;padding:14px 18px;background:rgba(255,200,0,0.08);border-left:3px solid var(--orange);border-radius:4px;font-size:13px;line-height:1.55;">
+    <b>Coverage caveat.</b> tracerCC prices only what's in the sessions you hand it. If your provider dashboard is higher,
+    the gap is usually: OpenAI stored-only exports (non-stored + Responses API are invisible to listing),
+    or Cursor's <code>ai-code-tracking.db</code> not covering API-pool overflow,
+    or approximate token counts (this run: ${{ r.total_spend_usd|money(2) }} — see the hero for span).
   </div>
 </section>
+{% endif %}
 
 {% if r.fun_stats %}
 <!-- FUN STATS -->
