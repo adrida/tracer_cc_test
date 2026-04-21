@@ -89,6 +89,14 @@ class AnalyzeOptions(BaseModel):
         ]
     )
     min_cluster_size: Optional[int] = None  # auto if None
+    # Gate-loosening knob: allow assistant turns with up to N chars of
+    # reasoning/thinking text to still be classed as "mechanical" iff the
+    # tool calls otherwise pass the filter. 0 (default) is the strict
+    # tracer-paper discipline — no reasoning allowed. Higher values unlock
+    # agents like GPT-5.2 that auto-emit short chain-of-thought on every
+    # call regardless of difficulty. The clustering layer still has to agree
+    # the turn is part of a dense repeated-pattern group before it re-routes.
+    reasoning_threshold_chars: int = 0
 
 
 class AnalyzeRequest(BaseModel):

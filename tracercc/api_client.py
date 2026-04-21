@@ -48,17 +48,21 @@ def analyze(
     backend_token: str = DEFAULT_BACKEND_TOKEN,
     targets: list[str] | None = None,
     progress: bool = True,
+    reasoning_threshold_chars: int = 0,
 ) -> SimpleNamespace:
     """POST a redacted Tables payload to the backend, return a WrappedReport namespace."""
+    options: dict = {
+        "targets": targets or ["claude-sonnet-4-6", "claude-haiku-4-5", "composer-2"],
+    }
+    if reasoning_threshold_chars:
+        options["reasoning_threshold_chars"] = int(reasoning_threshold_chars)
     body = {
         "schema_version": "1.0",
         "source": source,
         "client_version": __version__,
         "redacted_prompts": True,
         "data": payload,
-        "options": {
-            "targets": targets or ["claude-sonnet-4-6", "claude-haiku-4-5", "composer-2"],
-        },
+        "options": options,
     }
     raw = json.dumps(body, default=str).encode("utf-8")
 

@@ -132,8 +132,12 @@ async def analyze(req: AnalyzeRequest) -> WrappedReport:
             earliest, latest, span_days,
         )
 
+    reasoning_threshold = int(getattr(req.options, "reasoning_threshold_chars", 0) or 0)
     premium["mech_only"] = premium["uuid"].apply(
-        lambda u: is_mechanical_assistant_turn(u, messages, tool_calls)
+        lambda u: is_mechanical_assistant_turn(
+            u, messages, tool_calls,
+            reasoning_threshold_chars=reasoning_threshold,
+        )
     )
     mech = premium[premium["mech_only"]].copy()
     if mech.empty:

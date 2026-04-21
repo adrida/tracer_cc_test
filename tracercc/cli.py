@@ -100,6 +100,11 @@ def main(argv: list[str] | None = None) -> int:
                    help="Optional bearer token for a self-hosted backend.")
     p.add_argument("--no-open", action="store_true",
                    help="Do not auto-open the dashboard in a browser.")
+    p.add_argument("--reasoning-threshold", type=int, default=0,
+                   help=("Max chars of reasoning/thinking text an assistant turn can "
+                         "carry and still be counted as mechanical. Default 0 (strict "
+                         "tracer gate). Raise to e.g. 1000 for agents like GPT-5.2 that "
+                         "auto-emit short chain-of-thought on every call."))
     p.add_argument("--quiet", action="store_true", help="Suppress progress output.")
     p.add_argument("--version", action="version", version=f"tracerCC {__version__}")
     args = p.parse_args(argv)
@@ -156,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
             backend_url=args.backend_url,
             backend_token=args.backend_token,
             progress=progress,
+            reasoning_threshold_chars=args.reasoning_threshold,
         )
     except BackendError as e:
         print(f"\n  \033[31m✗\033[0m {e}", file=sys.stderr)

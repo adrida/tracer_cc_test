@@ -52,16 +52,27 @@ def is_mechanical_assistant_turn(
     message_uuid: str,
     messages_df: pd.DataFrame,
     tool_calls_df: pd.DataFrame,
+    reasoning_threshold_chars: int = 0,
 ) -> bool:
     """True iff the assistant turn emitted only tool_use blocks targeting
-    MECHANICAL_TOOLS and zero text or thinking blocks."""
+    MECHANICAL_TOOLS, zero text blocks, and at most ``reasoning_threshold_chars``
+    of reasoning/thinking text.
+
+    With ``reasoning_threshold_chars=0`` this is the strict tracer-paper gate.
+    Raise the threshold to include agents that auto-emit short chain-of-thought
+    on every call (e.g. GPT-5.2) where the reasoning isn't actually a signal
+    that the turn required reasoning. The downstream density clustering still
+    has to classify the turn as part of a dense repeated-pattern group before
+    any re-routing happens.
+    """
     sub = messages_df[messages_df["uuid"] == message_uuid]
     if sub.empty:
         return False
     row = sub.iloc[0]
     if (row.get("n_text_blocks") or 0) > 0:
         return False
-    if (row.get("n_thinking_blocks") or 0) > 0:
+    thinking_chars = int(row.get("thinking_chars") or 0)
+    if thinking_chars > reasoning_threshold_chars:
         return False
     if (row.get("n_tool_use_blocks") or 0) == 0:
         return False
