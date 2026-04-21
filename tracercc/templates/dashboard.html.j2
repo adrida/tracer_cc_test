@@ -289,18 +289,17 @@ def chat(messages, tools, default_model="{{ rp.default_model if rp else 'gpt-5-2
     emit near-identical tool calls — that's the structural evidence behind each rule.
     <b>Hover a dot</b> to see the exact call. <b>Click a cluster label</b> to filter.
   </p>
-  <div id="clustermap-root" style="position:relative;background:var(--bg-1);border:1px solid var(--card-border);border-radius:16px;padding:0;margin-top:24px;">
-    <div id="clustermap-legend" style="position:absolute;top:16px;left:20px;z-index:2;font-size:12px;color:var(--fg-dim);max-width:320px;line-height:1.5;pointer-events:none;">
-      <div style="color:var(--fg);font-weight:600;margin-bottom:6px;">{{ r.n_mechanical_turns|number }} mechanical turns · {{ r.n_clusters }} dense clusters · {{ r.n_noise }} noise</div>
-      each colour = one gated cluster · radius ∝ $ cost of the turn<br>
-      <span style="color:#555;">gray dots</span> are turns HDBSCAN couldn't confidently group (excluded from the policy by design)
+  <div id="clustermap-root" style="position:relative;background:var(--bg-1);border:1px solid var(--card-border);border-radius:16px;padding:0;margin-top:24px;overflow:hidden;">
+    <div id="clustermap-legend" style="position:absolute;top:14px;left:18px;z-index:2;font-size:11px;color:var(--fg-dim);max-width:240px;line-height:1.45;pointer-events:none;">
+      <div style="color:var(--fg);font-weight:600;font-size:12px;margin-bottom:4px;">{{ r.n_mechanical_turns|number }} turns · {{ r.n_clusters }} clusters · {{ r.n_noise }} noise</div>
+      each colour = one cluster · dot radius ∝ $ cost · labels show the top 12 by spend
     </div>
-    <div id="clustermap-filter" style="position:absolute;top:16px;right:20px;z-index:2;font-size:12px;color:var(--green);cursor:pointer;display:none;">
+    <div id="clustermap-filter" style="position:absolute;top:14px;right:18px;z-index:2;font-size:12px;color:var(--green);cursor:pointer;display:none;">
       ✕ clear filter
     </div>
-    <svg id="clustermap-svg" viewBox="-60 -60 120 120" preserveAspectRatio="xMidYMid meet"
-         style="width:100%;height:600px;display:block;"></svg>
-    <div id="clustermap-tooltip" style="position:absolute;pointer-events:none;background:var(--bg-0);border:1px solid var(--card-border);border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.5;max-width:360px;opacity:0;transition:opacity .08s;z-index:3;box-shadow:0 8px 24px rgba(0,0,0,0.4);"></div>
+    <svg id="clustermap-svg" viewBox="-120 -80 240 160" preserveAspectRatio="xMidYMid meet"
+         style="width:100%;height:640px;display:block;"></svg>
+    <div id="clustermap-tooltip" style="position:absolute;pointer-events:none;background:var(--bg-0);border:1px solid var(--card-border);border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.5;max-width:380px;opacity:0;transition:opacity .08s;z-index:3;box-shadow:0 8px 24px rgba(0,0,0,0.4);"></div>
   </div>
   <p class="lede" style="margin-top:24px;font-size:14px;">
     <b>Reading the map</b> — tight, tightly-coloured blobs are the rules the policy is confident in (many
@@ -339,9 +338,16 @@ def chat(messages, tools, default_model="{{ rp.default_model if rp else 'gpt-5-2
   ];
   const colorFor = (cid) => cid < 0 ? '#454545' : PALETTE[cid % PALETTE.length];
 
+  // Coordinates come back in [-50, 50]. Our viewBox is -120..120 × -80..80 so
+  // we map points into a central pane leaving room for peripheral labels.
+  const scaleX = 80 / 50;   // -80..80 horizontally
+  const scaleY = 55 / 50;   // -55..55 vertically
+  const px = (x) => x * scaleX;
+  const py = (y) => y * scaleY;
+
   // Size scale — sqrt-normalised so cost differences read without one point dominating
   const maxCost = Math.max(...POINTS.map(p => p.cost_usd || 0), 0.001);
-  const radiusFor = (cost) => 0.35 + 1.6 * Math.sqrt((cost || 0) / maxCost);
+  const radiusFor = (cost) => 0.6 + 2.6 * Math.sqrt((cost || 0) / maxCost);
 
   // Render noise first (behind), then clusters (on top), labels topmost
   const byZ = POINTS.slice().sort((a, b) => (a.cluster_id < 0 ? -1 : 1) - (b.cluster_id < 0 ? -1 : 1));
@@ -366,8 +372,8 @@ def chat(messages, tools, default_model="{{ rp.default_model if rp else 'gpt-5-2
 
   byZ.forEach(p => {
     const c = document.createElementNS(NS, 'circle');
-    c.setAttribute('cx', p.x);
-    c.setAttribute('cy', p.y);
+    c.setAttribute('cx', px(p.x));
+    c.setAttribute('cy', py(p.y));
     c.setAttribute('r', radiusFor(p.cost_usd));
     c.setAttribute('fill', colorFor(p.cluster_id));
     c.setAttribute('opacity', p.cluster_id < 0 ? 0.35 : 0.85);
@@ -393,47 +399,123 @@ def chat(messages, tools, default_model="{{ rp.default_model if rp else 'gpt-5-2
     svg.appendChild(c);
   });
 
-  // Cluster labels — anchored at centroid
+  // Helper: measure approx label width in viewBox units for pill background.
+  const estLabelWidth = (s, fontSize) => s.length * fontSize * 0.58;
+
+  // Greedy label placement: place each label slightly offset from its centroid
+  // in the direction that has the most free space. Subsequent labels avoid
+  // previously-placed ones by increasing the offset distance until clear.
+  const placed = [];
+  const padding = 1.2;
+  function findLabelPosition(cx, cy, w, h) {
+    // Try: offset straight up first; then variations outward + rotating
+    const candidates = [
+      [0, -h - 4],     // above
+      [0, h + 4],      // below
+      [w / 2 + 3, 0],  // right
+      [-w / 2 - 3, 0], // left
+      [w / 2 + 3, -h - 2],
+      [-w / 2 - 3, -h - 2],
+      [w / 2 + 3, h + 2],
+      [-w / 2 - 3, h + 2],
+    ];
+    for (let scale = 1; scale <= 4; scale++) {
+      for (const [dx, dy] of candidates) {
+        const x = cx + dx * scale;
+        const y = cy + dy * scale;
+        // Viewport bounds check (leave a small margin)
+        if (x - w / 2 < -118 || x + w / 2 > 118 || y - h / 2 < -78 || y + h / 2 > 78) continue;
+        // Overlap check against already placed labels
+        let collision = false;
+        for (const p of placed) {
+          if (Math.abs(x - p.x) < (w + p.w) / 2 + padding && Math.abs(y - p.y) < (h + p.h) / 2 + padding) {
+            collision = true; break;
+          }
+        }
+        if (!collision) return { x, y };
+      }
+    }
+    // Last resort: push off-screen-bottom in a stacked column
+    const fallbackY = 72 + placed.filter(p => p.fallback).length * (h + 2);
+    return { x: cx, y: fallbackY, fallback: true };
+  }
+
+  // Cluster labels — only the top-N by spend were emitted server-side.
+  // Draw a connector from the cluster centroid to the label pill to keep
+  // the association visually explicit when labels are offset.
   LABELS.forEach(l => {
-    const g = document.createElementNS(NS, 'g');
-    g.setAttribute('transform', `translate(${l.x},${l.y})`);
-    g.setAttribute('class', 'cluster-label');
-    g.setAttribute('data-cluster', l.cluster_id);
-    g.style.cursor = 'pointer';
-    // small halo
+    const cx = px(l.x), cy = py(l.y);
+
+    // Small halo at the true centroid
     const halo = document.createElementNS(NS, 'circle');
-    halo.setAttribute('r', 3.5);
+    halo.setAttribute('cx', cx);
+    halo.setAttribute('cy', cy);
+    halo.setAttribute('r', 2.4);
     halo.setAttribute('fill', 'none');
     halo.setAttribute('stroke', colorFor(l.cluster_id));
-    halo.setAttribute('stroke-width', 0.6);
-    halo.setAttribute('opacity', 0.8);
-    g.appendChild(halo);
-    // label text — centre-anchored, with a dark stroke so it reads on any background
+    halo.setAttribute('stroke-width', 0.55);
+    halo.setAttribute('opacity', 0.9);
+    svg.appendChild(halo);
+
+    // Pill dimensions
+    const fontSize = 2.8;
+    const subSize = 1.9;
+    const w = Math.max(estLabelWidth(l.label, fontSize), estLabelWidth(`${l.n_turns}× · ${l.confidence}`, subSize)) + 4;
+    const h = fontSize + subSize + 3.5;
+
+    const pos = findLabelPosition(cx, cy, w, h);
+    placed.push({ x: pos.x, y: pos.y, w, h, fallback: !!pos.fallback });
+
+    // Connector line (cluster centroid → pill edge)
+    const line = document.createElementNS(NS, 'line');
+    line.setAttribute('x1', cx);
+    line.setAttribute('y1', cy);
+    line.setAttribute('x2', pos.x);
+    line.setAttribute('y2', pos.y);
+    line.setAttribute('stroke', colorFor(l.cluster_id));
+    line.setAttribute('stroke-width', 0.22);
+    line.setAttribute('opacity', 0.45);
+    svg.appendChild(line);
+
+    // Pill background
+    const g = document.createElementNS(NS, 'g');
+    g.setAttribute('class', 'cluster-label');
+    g.setAttribute('data-cluster', l.cluster_id);
+    g.setAttribute('transform', `translate(${pos.x},${pos.y})`);
+    g.style.cursor = 'pointer';
+    const rect = document.createElementNS(NS, 'rect');
+    rect.setAttribute('x', -w / 2);
+    rect.setAttribute('y', -h / 2);
+    rect.setAttribute('width', w);
+    rect.setAttribute('height', h);
+    rect.setAttribute('rx', 1.5);
+    rect.setAttribute('fill', 'rgba(8,10,12,0.92)');
+    rect.setAttribute('stroke', colorFor(l.cluster_id));
+    rect.setAttribute('stroke-width', 0.35);
+    g.appendChild(rect);
+
+    // Primary label text — cluster pattern
     const t = document.createElementNS(NS, 'text');
     t.setAttribute('x', 0);
-    t.setAttribute('y', -5);
+    t.setAttribute('y', -0.5);
     t.setAttribute('text-anchor', 'middle');
     t.setAttribute('fill', '#f4f7f5');
-    t.setAttribute('stroke', 'rgba(5,5,7,0.85)');
-    t.setAttribute('stroke-width', 0.6);
-    t.setAttribute('paint-order', 'stroke fill');
-    t.setAttribute('font-size', '3.2');
+    t.setAttribute('font-size', fontSize);
     t.setAttribute('font-weight', '700');
     t.textContent = l.label;
     g.appendChild(t);
-    // secondary line: n_turns · confidence
+
+    // Secondary: n_turns · confidence
     const t2 = document.createElementNS(NS, 'text');
     t2.setAttribute('x', 0);
-    t2.setAttribute('y', -1.2);
+    t2.setAttribute('y', fontSize);
     t2.setAttribute('text-anchor', 'middle');
     t2.setAttribute('fill', colorFor(l.cluster_id));
-    t2.setAttribute('stroke', 'rgba(5,5,7,0.85)');
-    t2.setAttribute('stroke-width', 0.4);
-    t2.setAttribute('paint-order', 'stroke fill');
-    t2.setAttribute('font-size', '2.2');
+    t2.setAttribute('font-size', subSize);
     t2.setAttribute('font-weight', '600');
     t2.textContent = `${l.n_turns}× · ${l.confidence}`;
     g.appendChild(t2);
+
     g.addEventListener('click', () => applyFilter(activeFilter === l.cluster_id ? null : l.cluster_id));
     svg.appendChild(g);
   });
@@ -464,147 +546,8 @@ def chat(messages, tools, default_model="{{ rp.default_model if rp else 'gpt-5-2
 </section>
 {% endif %}
 
-{% if r.fun_stats %}
-<!-- FUN STATS -->
-<section>
-  <h2>The <span class="accent">receipts</span></h2>
-  <p class="lede">A few things you probably didn't notice while you were typing.</p>
-  <div class="stats">
-    {% for s in r.fun_stats %}
-    <div class="stat">
-      <div class="t">{{ s.title }}</div>
-      <div class="v">{{ s.value }}</div>
-      <div class="d">{{ s.detail }}</div>
-    </div>
-    {% endfor %}
-  </div>
-</section>
-{% endif %}
-
-{% if r.top_clusters %}
-<!-- CLUSTER CARDS -->
-<section>
-  <h2>Top patterns of <span class="accent">mechanical waste</span></h2>
-  <p class="lede">
-    Each card is one BGE+HDBSCAN cluster of near-identical mechanical tool calls.
-    The medoid is the most-central command in the cluster; HDBSCAN density guarantees
-    that every other command in the cluster is a small variation on this one.
-    These are the routinizable patterns Tracer recommends demoting.
-  </p>
-  <div class="clusters">
-    {% for c in r.top_clusters %}
-    <div class="cl">
-      <div class="label">{{ c.dominant_tool }} · {{ c.n_turns }} turns</div>
-      <div class="name">{{ c.label }}</div>
-      <div class="row"><span class="l">Spent on Opus</span><span class="v actual num">${{ c.actual_usd|money(2) }}</span></div>
-      <div class="row"><span class="l">If rerouted to Haiku</span><span class="v save num">save ${{ c.save_haiku_usd|money(2) }}</span></div>
-      <div class="bar">
-        <div class="fill-actual"></div>
-        <div class="fill-save" style="width: {{ 100 * c.save_haiku_usd / c.actual_usd if c.actual_usd else 0|money(1) }}%"></div>
-      </div>
-      <pre class="medoid">{{ c.medoid_text }}</pre>
-      {% if c.examples and c.examples|length > 1 %}
-      <div class="ex">
-        <span style="color:var(--fg-dim);border:none">Other examples in this cluster:</span>
-        {% for ex in c.examples[1:] %}
-        <span>{{ ex }}</span>
-        {% endfor %}
-      </div>
-      {% endif %}
-    </div>
-    {% endfor %}
-  </div>
-</section>
-{% endif %}
-
-{% if r.top_sessions %}
-<!-- SESSIONS -->
-<section>
-  <h2>Your most expensive <span class="accent">sessions</span></h2>
-  <p class="lede">
-    Where the money actually went, by session. Useful for spotting which workflows
-    deserve a different default `/model`.
-  </p>
-  <table class="sess">
-    <thead>
-      <tr>
-        <th>Session</th>
-        <th>Started</th>
-        <th>Prompts</th>
-        <th>Top tool</th>
-        <th>Model</th>
-        <th style="text-align:right">Spend</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for s in r.top_sessions %}
-      <tr>
-        <td>
-          <div class="mono">{{ s.session_short }}</div>
-          <div class="cwd">{{ s.cwd }}</div>
-        </td>
-        <td class="num">{{ s.started_at }}</td>
-        <td class="num">{{ s.n_prompts }}</td>
-        <td class="mono">{{ s.top_tool }}</td>
-        <td class="mono">{{ s.dominant_model }}</td>
-        <td class="spend num">${{ s.spend_usd|money(2) }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</section>
-{% endif %}
-
-<!-- TRUST -->
-<section>
-  <div class="trust">
-    <h2>What we <span class="accent" style="color:var(--purple)">won't</span> claim</h2>
-    <p class="lede">
-      tracerCC is a <b>fail-closed</b> diagnostic. If we can't find structural evidence
-      that a turn is routinizable, we exclude it. That's why the savings number below
-      is smaller than a naive arithmetic ceiling — and why it's defensible.
-    </p>
-    <div class="gauge" title="">
-      {% set total = r.opus_spend_usd if r.opus_spend_usd else 1 %}
-      {% set rec_pct = 100 * r.spend_in_clusters_usd / total %}
-      {% set exc_pct = 100 - rec_pct %}
-      <div class="seg-recommend" style="width: {{ '%.1f'|format(rec_pct) }}%"></div>
-      <div class="seg-excluded"  style="width: {{ '%.1f'|format(exc_pct) }}%"></div>
-    </div>
-    <div class="legend">
-      <span><i style="background:var(--green)"></i>
-        ${{ r.spend_in_clusters_usd|money }} ({{ rec_pct|money }}%) recommendable
-      </span>
-      <span><i style="background:var(--purple)"></i>
-        ${{ r.spend_excluded_usd|money }} ({{ exc_pct|money }}%) excluded — needs more evidence
-      </span>
-    </div>
-    <p style="color:var(--fg-dim); font-size:14px; margin-top:24px; line-height:1.6;">
-      For comparison, naive arithmetic ("just demote every Opus turn to Haiku") would suggest
-      <b style="color:var(--fg)">${{ r.ceiling_haiku_usd|money }} ({{ r.ceiling_haiku_pct_of_opus|money }}%)</b> saveable.
-      We capture <b style="color:var(--green)">{{ 100 * r.saving_haiku_usd / r.ceiling_haiku_usd if r.ceiling_haiku_usd else 0|money }}%</b> of that ceiling
-      with per-cluster quality-preservation evidence for every dollar.
-    </p>
-  </div>
-</section>
-
-<!-- METHOD -->
-<section>
-  <div class="method">
-    <h2>How we computed this</h2>
-    <ol>
-      <li><b>Extracted</b> {{ r.n_messages|number }} messages from your <span class="mono">~/.claude/projects/</span> JSONL streams.</li>
-      <li><b>Priced</b> each message against current Anthropic pricing (verified Apr 2026: Opus 4.x at $5/$25 per Mtok).</li>
-      <li><b>Identified</b> {{ r.n_mechanical_turns|number }} mechanical-only Opus turns — turns whose only output is a `Bash` / `Read` / `Glob` / `Grep` / `Edit` tool call, with no thinking blocks.</li>
-      <li><b>Embedded</b> each turn's tool input with Cloudflare BGE-M3 (1024-dim).</li>
-      <li><b>Clustered</b> the embeddings with UMAP → HDBSCAN. Found {{ r.n_clusters }} dense clusters; excluded {{ r.n_noise }} noise turns.</li>
-      <li><b>Repriced</b> only the clustered turns at Haiku rates → ${{ r.saving_haiku_usd|money }} headline saving.</li>
-    </ol>
-  </div>
-</section>
-
 <footer>
-  <p>generated {{ r.generated_at }} by <b>tracerCC v{{ r.tracercc_version }}</b><br>
+  <p>generated {{ r.generated_at }} by <b>tracerCC v{{ r.backend_version }}</b><br>
   <a href="https://github.com/adrida/tracer">adrida/tracer</a> · this report is local and never leaves your machine</p>
 </footer>
 

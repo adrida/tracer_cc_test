@@ -471,32 +471,59 @@ def _build_clustermap(
             text=str(texts[i])[:160],
         ))
 
-    # Per-cluster labels (centroid + metadata from the ClusterCard cards already built).
+    # Per-cluster labels (centroid + metadata). We ONLY label the top-N clusters
+    # by cluster-level spend — on 160-cluster corpora, labelling every one
+    # turns the scatter into unreadable text soup. Unlabelled clusters are
+    # still colour-differentiated and available in the policy table.
     labels_by_cluster: dict[int, ClusterCard] = {c.cluster_id: c for c in top_clusters}
-    cluster_labels: list[ClusterLabel] = []
+    # Rank clusters by total spend to pick the ones worth labelling.
+    cluster_stats: list[tuple[int, float, int]] = []  # (cid, total_cost, n_turns)
     for cid in sorted({int(l) for l in labels} - {-1}):
+        mask = labels == cid
+        cluster_stats.append((cid, float(costs[mask].sum()), int(mask.sum())))
+    cluster_stats.sort(key=lambda t: (t[1], t[2]), reverse=True)
+    # Top 12 is a good balance for a 700px-wide viewport with readable fonts.
+    TOP_LABELLED = 12
+    labelled_cids = {t[0] for t in cluster_stats[:TOP_LABELLED]}
+
+    # Humanise the label — prefer the dominant_tool + a short medoid-derived
+    # keyword over the generic "<Tool> pattern" fallback. We look at the first
+    # token after the tool name in the medoid (e.g. "memory: add …" → "memory · add"),
+    # which surfaces the semantic *action*, not just the bucket.
+    def _humanise(card: ClusterCard | None, dom_tool: str, n_turns: int) -> str:
+        if card is not None and card.label and not card.label.endswith("pattern"):
+            return card.label
+        # Extract action keyword from medoid text if available.
+        text = (card.medoid_text if card else "") or ""
+        # "memory: add User says the inst_* equipment..." → "add User..."
+        # "terminal: python -m py_compile /root/..." → "python -m py_compile ..."
+        _, _, rest = text.partition(":")
+        rest = rest.strip()
+        # Take up to first punctuation boundary / 40 chars.
+        import re as _re
+        keyword = _re.split(r"[\n\"'{}:,()]", rest, maxsplit=1)[0].strip()[:40]
+        if keyword:
+            return f"{dom_tool} · {keyword}"
+        return dom_tool or "mechanical pattern"
+
+    cluster_labels: list[ClusterLabel] = []
+    for cid, spend, n_turns in cluster_stats:
+        if cid not in labelled_cids:
+            continue
         mask = labels == cid
         cx = float(coords[mask, 0].mean())
         cy = float(coords[mask, 1].mean())
         card = labels_by_cluster.get(cid)
-        # pull confidence back off the routing-rule confidence policy bridge
-        # (we don't have it yet here — just use size thresholds mirroring the
-        # rule heuristic so the plot and the policy table agree).
-        n_turns = int(mask.sum())
-        if card is None:
-            lab = f"cluster {cid}"
-            dom = str(tool_names[mask][0]) if mask.any() else "?"
-        else:
-            lab = card.label
-            dom = card.dominant_tool
+        dom = (card.dominant_tool if card else str(tool_names[mask][0])) if mask.any() else "?"
         if n_turns >= 50:
             conf = "high"
         elif n_turns >= 20:
             conf = "medium"
         else:
             conf = "low"
+        lab = _humanise(card, dom, n_turns)
         cluster_labels.append(ClusterLabel(
-            cluster_id=cid, x=cx, y=cy, label=lab[:60],
+            cluster_id=cid, x=cx, y=cy, label=lab[:48],
             dominant_tool=dom[:40], n_turns=n_turns, confidence=conf,
         ))
 
