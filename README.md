@@ -28,18 +28,33 @@
 
 ## Install & run
 
+Not yet on PyPI — install straight from the git repo:
+
 ```bash
-pip install tracercc
+pip install 'tracercc @ git+https://github.com/adrida/tracer_cc_test.git'
 tracercc
 ```
 
-That's it. Two commands. The client parses your session data locally, redacts
-prompt + response text, posts the redacted metadata to the hosted analysis
-backend, and renders a self-contained HTML in your browser. No extras, no
-torch, no local compute — all heavy lifting runs on our infra (Cloud Run +
-Cloudflare Workers AI) for the fastest possible first click.
+Or with `uv` (faster, no venv management needed):
 
-One-liner (installs `uv` if needed):
+```bash
+uv tool install 'tracercc @ git+https://github.com/adrida/tracer_cc_test.git'
+tracercc
+```
+
+Or one-shot via `uvx` (no install at all — runs from cache):
+
+```bash
+uvx --from 'git+https://github.com/adrida/tracer_cc_test.git' tracercc
+```
+
+The client parses your session data locally, redacts prompt + response text,
+posts the redacted metadata to the hosted analysis backend, and renders a
+self-contained HTML in your browser. No extras, no torch, no local compute —
+all heavy lifting runs on our infra (Cloud Run + Cloudflare Workers AI) for
+the fastest possible first click.
+
+One-liner install (installs `uv` if needed):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/adrida/tracer_cc_test/main/install.sh | bash
