@@ -109,6 +109,56 @@ TRACERCC_BACKEND_TOKEN=…                          # bearer token if backend re
 
 ---
 
+## Actionable output — the routing policy
+
+Every run produces `tracer_policy.json` alongside the HTML. That's the file
+you hand your agent team. It's a list of **signature → target-model** rules
+fitted from your own past traces, each with confidence + evidence counts.
+
+Drop it into your OpenAI-shape client in ~8 lines:
+
+```python
+from tracercc.runtime import Router
+import openai
+
+router = Router.from_file("./tracer_policy.json", min_confidence="medium")
+
+def chat(messages, tools, default_model):
+    model, rule_id = router.route(messages=messages, tools=tools)
+    # router picks a cheaper sibling if the session's recent tool pattern
+    # matches a rule; otherwise it returns the default model
+    result = openai.chat.completions.create(
+        model=model or default_model, messages=messages, tools=tools,
+    )
+    router.record(rule_id, result)       # optional — for the refit flywheel
+    return result
+```
+
+What the router does at call time:
+- Extracts a signature from `messages` (currently: the last assistant tool
+  call in the history).
+- Scans the policy's rules, highest-confidence first.
+- If a matching rule has a valid `target_model` that differs from the
+  source, returns `(target_model, rule_id)`.
+- Otherwise returns `(default_model, None)` — **pure pass-through**, no
+  behaviour change.
+
+Safety:
+- `min_confidence="medium"` drops rules with thin evidence. `"high"` is
+  strictest; `"low"` is widest.
+- The router never synthesises a tool call — it only rewrites the `model`
+  parameter on your behalf.
+- If the cheap model returns a response your agent can't use, you fall back
+  to the default model yourself and call `router.record(rule_id, result, ok=False)`
+  to penalise the rule in the next refit.
+
+Re-fit on new traces whenever — the flywheel:
+
+```bash
+tracercc --source custom --reasoning-threshold 1000 \
+         --policy-out ./tracer_policy.json
+```
+
 ## How the saveable number is computed
 
 For every assistant turn, we price it at its actual model's rate using a
