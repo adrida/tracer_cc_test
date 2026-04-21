@@ -27,6 +27,7 @@ _KEEP_MESSAGE = (
     "input_tokens", "output_tokens",
     "cache_read_input_tokens", "cache_creation_input_tokens",
     "n_text_blocks", "n_thinking_blocks", "n_tool_use_blocks",
+    "thinking_chars",
     "project_dir",
 )
 
@@ -34,6 +35,7 @@ _INT_MESSAGE_FIELDS = {
     "input_tokens", "output_tokens",
     "cache_read_input_tokens", "cache_creation_input_tokens",
     "n_text_blocks", "n_thinking_blocks", "n_tool_use_blocks",
+    "thinking_chars",
 }
 
 _KEEP_SESSION = (
