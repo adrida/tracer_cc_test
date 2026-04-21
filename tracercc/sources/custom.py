@@ -95,6 +95,17 @@ CUSTOM_DIR = Path(os.environ.get(
 ))
 PROJECTS_DIR = CUSTOM_DIR  # uniform API for autodetect
 
+# Model + token fallbacks for agent exports that don't carry them inline
+# (e.g. Hermes OpenAI-shaped sessions v2 — ``role: user / assistant / tool``
+# with timestamps only). ``TRACERCC_DEFAULT_MODEL`` tags every message whose
+# event has no ``model`` field so the family-aware mechanical gate can still
+# fire. ``TRACERCC_APPROX_TOKENS`` (default on) estimates input/output tokens
+# from content + reasoning char counts when ``input_tokens`` / ``output_tokens``
+# are absent — the dashboard surfaces this as "(approximate)".
+DEFAULT_MODEL = os.environ.get("TRACERCC_DEFAULT_MODEL", "gpt-5-2")
+APPROX_TOKENS = os.environ.get("TRACERCC_APPROX_TOKENS", "1").lower() not in ("0", "false", "no")
+CHARS_PER_TOKEN = 4
+
 
 # --------------------------------------------------------------------------- #
 # Event normalisation helpers
@@ -108,8 +119,10 @@ _EVENT_ALIASES: dict[str, str] = {
     "assistant_text": "assistant_message",
     "tool_use":       "tool_call",
     "tool":           "tool_call",
+    "tool_result":    "tool_result",
     "session":        "session_start",
     "session_open":   "session_start",
+    "session_meta":   "session_start",
     "session_close":  "session_end",
 }
 
@@ -125,6 +138,13 @@ def _norm_event(ev: dict) -> str | None:
             return "user_prompt"
         if r == "assistant":
             return "assistant_message"
+        if r == "session_meta":
+            return "session_start"
+        if r == "tool":
+            # A ``role: tool`` entry is an OpenAI-shaped tool result message;
+            # not a tool *call*. We don't need to emit anything for it — tool
+            # calls are already captured from the assistant's tool_calls array.
+            return "tool_result"
     return None
 
 
@@ -195,9 +215,10 @@ def _split_by_session(jsonl_path: Path) -> dict[str, list[dict]]:
 
     Supports single-session files (one key) and multi-session batch exports
     (many keys). Events with no session_id all fall into the same fallback
-    bucket keyed on the file path UUID so they still parse as one session.
+    bucket keyed on the filename stem so the dashboard shows a human-readable
+    session id (e.g. ``20260401_154556_395f70d8``) rather than an opaque UUID.
     """
-    fallback = str(_uuid.uuid5(_uuid.NAMESPACE_OID, str(jsonl_path)))
+    fallback = jsonl_path.stem or str(_uuid.uuid5(_uuid.NAMESPACE_OID, str(jsonl_path)))
     buckets: dict[str, list[dict]] = {}
     for ev in _iter_events(jsonl_path):
         sid = (ev.get("session_id") or ev.get("sessionId")
@@ -239,6 +260,16 @@ def _parse_session(
             cwd = ev.get("cwd") or cwd
             entrypoint = ev.get("entrypoint") or entrypoint
             primary_model = ev.get("model") or primary_model
+    # Fall back to the global default model when the export doesn't tag one.
+    # Without a model the downstream family-aware gate returns an empty set of
+    # cheaper siblings and the whole session is dropped from clustering.
+    if not primary_model:
+        primary_model = DEFAULT_MODEL
+
+    # Running tallies for the chars/4 token estimator. Each assistant turn's
+    # input_tokens approximates "prior context it billed against" (cumulative
+    # session chars so far), and output_tokens approximates "this turn's text".
+    cumulative_input_chars = 0
 
     for i, ev in enumerate(raw_events):
         ev_name = _norm_event(ev)
@@ -257,6 +288,8 @@ def _parse_session(
 
         if ev_name == "user_prompt":
             text = _text(ev)
+            if text:
+                cumulative_input_chars += len(text)
             prompt_id = ev.get("prompt_id") or ev.get("promptId") or str(
                 _uuid.uuid5(_uuid.NAMESPACE_OID, f"{jsonl_path}:{session_id}:p:{i}"),
             )
@@ -290,15 +323,31 @@ def _parse_session(
 
         elif ev_name == "assistant_message":
             text = _text(ev)
-            thinking_chars = int(ev.get("thinking_chars") or 0)
+            # ``reasoning`` on OpenAI-shape assistant messages is the thinking
+            # block — count its chars so the mechanical-turn gate recognises
+            # these turns as carrying reasoning.
+            reasoning = ev.get("reasoning")
+            thinking_chars = int(ev.get("thinking_chars") or 0) or (
+                len(reasoning) if isinstance(reasoning, str) else 0
+            )
             last_assistant_uuid = ev_uuid
+            # Token estimation fallback when the export doesn't record usage.
+            in_tok = ev.get("input_tokens")
+            out_tok = ev.get("output_tokens")
+            if APPROX_TOKENS and in_tok is None and out_tok is None:
+                in_tok = cumulative_input_chars // CHARS_PER_TOKEN
+                out_tok = (len(text or "") + thinking_chars) // CHARS_PER_TOKEN
+            # Advance cumulative input-char tally for the next assistant turn.
+            cumulative_input_chars += (len(text or "") + thinking_chars)
             messages.append({
                 "session_id": session_id, "project_dir": project_dir,
                 "uuid": ev_uuid, "parent_uuid": None,
                 "role": "assistant", "type": "assistant",
                 "model": model, "timestamp": ts,
                 "request_id": ev.get("request_id"),
-                "stop_reason": ev.get("stop_reason"),
+                # OpenAI-shape messages use ``finish_reason``; Anthropic uses
+                # ``stop_reason``. Carry whichever is present.
+                "stop_reason": ev.get("stop_reason") or ev.get("finish_reason"),
                 "is_sidechain": bool(ev.get("is_sidechain")),
                 "is_api_error": False, "error": None, "permission_mode": None,
                 "prompt_id": None,
@@ -310,13 +359,69 @@ def _parse_session(
                 "n_tool_use_blocks": 0, "n_tool_result_blocks": 0,
                 "text_chars": len(text or ""), "thinking_chars": thinking_chars,
                 "first_text_preview": _trunc(text, 280),
-                "input_tokens": ev.get("input_tokens"),
-                "output_tokens": ev.get("output_tokens"),
+                "input_tokens": in_tok,
+                "output_tokens": out_tok,
                 "cache_creation_input_tokens": ev.get("cache_creation_tokens") or 0,
                 "cache_read_input_tokens": ev.get("cache_read_tokens") or 0,
                 "service_tier": ev.get("service_tier"),
                 "turn_duration_ms": ev.get("duration_ms") or ev.get("turn_duration_ms"),
             })
+
+            # OpenAI-shape inline tool calls: the assistant message carries an
+            # array like ``[{"id","function":{"name","arguments"}}]``. Expand
+            # each one into a standalone tool_call row so the mechanical gate
+            # and BGE clustering operate on them the same way they do on
+            # Claude Code tool_use blocks.
+            inline = ev.get("tool_calls")
+            if isinstance(inline, list):
+                for j, tc_inline in enumerate(inline):
+                    if not isinstance(tc_inline, dict):
+                        continue
+                    fn = tc_inline.get("function") or {}
+                    tool_name = (
+                        fn.get("name")
+                        or tc_inline.get("name")
+                        or tc_inline.get("tool_name")
+                        or "?"
+                    )
+                    args_raw = fn.get("arguments") if fn else tc_inline.get("arguments")
+                    if isinstance(args_raw, str):
+                        try:
+                            tool_input = json.loads(args_raw)
+                        except Exception:
+                            tool_input = {"_raw_arguments": args_raw[:400]}
+                    else:
+                        tool_input = args_raw or tc_inline.get("input") or tc_inline.get("tool_input")
+                    tu_id = (
+                        tc_inline.get("id")
+                        or tc_inline.get("tool_use_id")
+                        or tc_inline.get("call_id")
+                        or str(_uuid.uuid5(
+                            _uuid.NAMESPACE_OID,
+                            f"{jsonl_path}:{session_id}:{i}:inline-tc:{j}",
+                        ))
+                    )
+                    tool_calls.append({
+                        "session_id": session_id, "project_dir": project_dir,
+                        "tool_use_id": tu_id, "tool_name": tool_name, "model": model,
+                        "is_sidechain": bool(ev.get("is_sidechain")),
+                        "parent_assistant_uuid": ev_uuid,
+                        "request_id": ev.get("request_id"),
+                        "started_at": ts, "ended_at": ts,
+                        "wallclock_latency_ms": None,
+                        "reported_duration_ms": None,
+                        "input_preview": _str(tool_input, 600),
+                        "input_size": len(json.dumps(tool_input, default=str))
+                                       if tool_input is not None else 0,
+                        "is_error": False,
+                        "interrupted": None,
+                        "is_image": None, "no_output_expected": None,
+                        "result_preview": None,
+                        "stdout_preview": None, "stderr_preview": None,
+                        "subagent_total_tokens": None, "subagent_tool_use_count": None,
+                        "subagent_id": None, "subagent_type": None,
+                        "permission_mode": None, "cwd": cwd, "git_branch": None,
+                    })
 
         elif ev_name == "tool_call":
             tool_name  = ev.get("tool_name") or ev.get("name") or "?"
